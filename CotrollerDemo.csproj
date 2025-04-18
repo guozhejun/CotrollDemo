@@ -1,0 +1,22 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net6.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <LangVersion>12</LangVersion>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="devexpress.wpf.docking" Version="23.1.5" />
+    <PackageReference Include="devexpress.wpf.grid.core" Version="23.1.5" />
+    <PackageReference Include="devexpress.wpf.layoutcontrol" Version="23.1.5" />
+    <PackageReference Include="Prism.DryIoc" Version="9.0.537" />
+  </ItemGroup>
+  <ItemGroup>
+    <Reference Include="Arction.Wpf.Charting.LightningChart">
+      <HintPath>C:\Program Files (x86)\Arction\LightningChart .NET SDK v.10\LibNET4\Arction.Wpf.Charting.LightningChart.dll</HintPath>
+    </Reference>
+    <Reference Include="Arction.Wpf.SignalProcessing.SignalTools">
+      <HintPath>C:\Program Files (x86)\Arction\LightningChart .NET SDK v.10\LibNET4\Arction.Wpf.SignalProcessing.SignalTools.dll</HintPath>
+    </Reference>
+  </ItemGroup>
+</Project>
