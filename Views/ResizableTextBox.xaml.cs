@@ -1,19 +1,10 @@
 ﻿using System;
-using System.Collections.Generic;
 using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
-using System.Windows.Data;
-using System.Windows.Documents;
 using System.Windows.Input;
-using System.Windows.Media;
 using System.Windows.Media.Animation;
-using System.Windows.Media.Imaging;
-using System.Windows.Navigation;
-using System.Windows.Shapes;
 
 namespace CotrollerDemo.Views
 {
@@ -129,6 +120,7 @@ namespace CotrollerDemo.Views
 
         private void UserControl_MouseDoubleClick(object sender, MouseButtonEventArgs e)
         {
+            //Text = textBox.Text;
             StartEditing();
         }
 
@@ -145,9 +137,8 @@ namespace CotrollerDemo.Views
             }
         }
 
-        private void StartEditing()
+        public void StartEditing()
         {
-            textBox.Text = Text;
             textBlock.Visibility = Visibility.Collapsed;
             textBox.Visibility = Visibility.Visible;
             textBox.Focus();
@@ -167,13 +158,27 @@ namespace CotrollerDemo.Views
 
         private void TextBox_PreviewMouseRightButtonDown(object sender, MouseButtonEventArgs e)
         {
+            // 阻止默认行为
             e.Handled = true;
+
+            // 保存选中状态
+            int selectionStart = textBox.SelectionStart;
+            int selectionLength = textBox.SelectionLength;
+
+            // 手动打开菜单
             MainContextMenu.PlacementTarget = textBox;
             MainContextMenu.Placement = PlacementMode.RelativePoint;
             var pos = e.GetPosition(textBox);
             MainContextMenu.HorizontalOffset = pos.X;
             MainContextMenu.VerticalOffset = pos.Y;
             MainContextMenu.IsOpen = true;
+
+            // 恢复选中状态
+            Dispatcher.BeginInvoke(new Action(() =>
+            {
+                textBox.SelectionStart = selectionStart;
+                textBox.SelectionLength = selectionLength;
+            }), System.Windows.Threading.DispatcherPriority.Input);
         }
 
         private void UserControl_ContextMenuOpening(object sender, ContextMenuEventArgs e)
@@ -185,7 +190,7 @@ namespace CotrollerDemo.Views
         private void UpdateMenuState()
         {
             var isEditing = textBox.Visibility == Visibility.Visible;
-            var hasText = !string.IsNullOrEmpty(Text);
+            var hasSelection = !string.IsNullOrEmpty(textBox.SelectedText);
 
             foreach (MenuItem item in MainContextMenu.Items)
             {
@@ -196,11 +201,11 @@ namespace CotrollerDemo.Views
                         break;
 
                     case "剪切":
-                        item.IsEnabled = isEditing && hasText;
+                        item.IsEnabled = isEditing && hasSelection;
                         break;
 
                     case "复制":
-                        item.IsEnabled = hasText;
+                        item.IsEnabled = hasSelection;
                         break;
 
                     case "粘贴":
@@ -224,28 +229,35 @@ namespace CotrollerDemo.Views
 
         private void Cut_Click(object sender, RoutedEventArgs e)
         {
-            if (!string.IsNullOrEmpty(Text))
+            if (!string.IsNullOrEmpty(textBox.SelectedText))
             {
-                Clipboard.SetText(Text);
-                Text = "";
+                Clipboard.SetText(textBox.SelectedText);
+                textBox.SelectedText = "";  // 只删除选中部分
+                Text = textBox.Text;
                 UpdateTextDisplay();
             }
         }
 
         private void Copy_Click(object sender, RoutedEventArgs e)
         {
-            if (!string.IsNullOrEmpty(Text))
-            {
-                Clipboard.SetText(Text);
-            }
+            Clipboard.SetText(textBox.SelectedText);
         }
 
         private void Paste_Click(object sender, RoutedEventArgs e)
         {
             if (Clipboard.ContainsText())
             {
-                Text += Clipboard.GetText();
-                UpdateTextDisplay();
+                Text = Clipboard.GetText();
+                if (textBox.SelectedText != textBox.Text)
+                {
+                    //textBox.Text += Text;
+                    textBox.SelectedText = Text;
+                }
+                else
+                {
+                    textBox.Text = Text;
+                    textBlock.Text = Text;
+                }
             }
         }
 

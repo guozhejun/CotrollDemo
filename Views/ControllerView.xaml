@@ -33,6 +33,20 @@
             x:Name="FileGroup"
             HorizontalAlignment="Left"
             Orientation="Vertical">
+            <dxlc:LayoutItem>
+                <StackPanel Margin="5" Orientation="Horizontal">
+
+                    <TextBlock
+                        Name="Name"
+                        VerticalAlignment="Center"
+                        Text="搜索：" />
+                    <dxe:TextEdit
+                        MinWidth="175"
+                        HorizontalAlignment="Stretch"
+                        VerticalAlignment="Stretch"
+                        EditValueChanged="TextEdit_EditValueChanged" />
+                </StackPanel>
+            </dxlc:LayoutItem>
             <dxlc:LayoutItem Label="文件列表" LabelPosition="Top">
                 <dxe:ListBoxEdit
                     x:Name="FileList"
@@ -86,7 +100,8 @@
                         x:Name="GridControl"
                         Height="128"
                         dx:ScrollBarExtensions.ScrollBarMode="TouchOverlap"
-                        ItemsSource="{Binding Devices}">
+                        ItemsSource="{Binding Devices, Mode=TwoWay}"
+                        SelectedItemChanged="GridControl_OnSelectedItemChanged">
                         <dxg:GridControl.Columns>
                             <dxg:GridColumn Binding="{Binding IpAddress}" FieldName="设备IP" />
                             <dxg:GridColumn Binding="{Binding SerialNum}" FieldName="设备序列号" />
@@ -96,6 +111,7 @@
                             <dxg:TableView
                                 AllowEditing="False"
                                 AutoWidth="True"
+                                DragRecordOver="OnDragRecordOver"
                                 NavigationStyle="Row"
                                 RowDetailsVisibilityMode="Visible"
                                 ShowGroupPanel="False"

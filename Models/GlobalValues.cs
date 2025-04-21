@@ -1,14 +1,9 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Collections.ObjectModel;
+﻿using System.Collections.ObjectModel;
 using System.Linq;
 using System.Net;
-using System.Text;
-using System.Threading.Tasks;
 
 namespace CotrollerDemo.Models
 {
-
     public static class GlobalValues
     {
         /// <summary>
@@ -26,10 +21,6 @@ namespace CotrollerDemo.Models
         /// </summary>
         public static bool IsRunning { get; set; } = false;
 
-        /// <summary>
-        /// UI更新计数器，用于控制更新优先级
-        /// </summary>
-        public static int UpdateCount { get; set; } = 0;
 
         public static ObservableCollection<DeviceInfoModel> Devices { get; set; } = [];
 

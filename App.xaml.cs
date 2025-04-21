@@ -1,8 +1,8 @@
-﻿using System.Windows;
-using CotrollerDemo.ViewModels;
+﻿using CotrollerDemo.ViewModels;
 using CotrollerDemo.Views;
 using Prism.Ioc;
 using Prism.Navigation.Regions;
+using System.Windows;
 
 namespace CotrollerDemo
 {
@@ -29,7 +29,7 @@ namespace CotrollerDemo
             shell.Show();
 
             //导航到ViewA
-           var regionManager = Container.Resolve<IRegionManager>();
+            var regionManager = Container.Resolve<IRegionManager>();
             regionManager.RequestNavigate("ContentRegion", "ControllerView");
         }
     }

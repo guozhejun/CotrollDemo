@@ -1,18 +1,21 @@
 ﻿using Arction.Wpf.Charting;
 using Arction.Wpf.Charting.SeriesXY;
 using CotrollerDemo.ViewModels;
+using DevExpress.Mvvm.Native;
 using DevExpress.Xpf.Core;
 using DevExpress.Xpf.Editors;
 using System;
 using System.Collections.Generic;
+using System.Collections.ObjectModel;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
-using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
+using CotrollerDemo.Models;
+using DevExpress.Xpf.Grid;
 
 namespace CotrollerDemo.Views
 {
@@ -37,6 +40,7 @@ namespace CotrollerDemo.Views
             }
         }
 
+        private ObservableCollection<string> TempFiles = [];
         private ControllerViewModel _controller;
         private readonly MainWindow _main = new();
 
@@ -53,16 +57,24 @@ namespace CotrollerDemo.Views
         private void CanvasBase_SizeChanged(object sender, SizeChangedEventArgs e)
         {
             _controller = DataContext as ControllerViewModel;
-            if (_controller != null && !CanvasBase.Children.Contains(_controller.Charts[0]))
-            {
-                CanvasBase.Children.Add(_controller.Charts[0]);
-            }
-
             if (_controller != null)
             {
+                TempFiles = _controller.FileNames;
+
+                if (!CanvasBase.Children.Contains(_controller.Charts[0]))
+                {
+                    CanvasBase.Children.Add(_controller.Charts[0]);
+                }
                 _controller.Charts[0].Width = CanvasBase.ActualWidth;
                 _controller.Charts[0].Height = CanvasBase.ActualHeight;
             }
+        }
+
+        void OnDragRecordOver(object sender, DragRecordOverEventArgs e)
+        {
+            if (e.IsFromOutside)
+                e.Effects = DragDropEffects.Copy;
+            e.Handled = true;
         }
 
         /// <summary>
@@ -137,20 +149,9 @@ namespace CotrollerDemo.Views
                 var file = fileName;
                 try
                 {
-                    Task.Run(async () =>
-                    {
-                        await Application.Current.Dispatcher.BeginInvoke(() =>
-                        {
-                            // 使用Text格式而不是StringFormat，避免格式转换问题
-                            lock (this)
-                            {
-                                DragDrop.DoDragDrop(listBoxEdit, listBoxEdit.SelectedItem.ToString(), DragDropEffects.Link);
-                            }
-                        });
-                    });
-
-                    // 记录拖放结果
-                    //Debug.WriteLine($"拖放操作完成，效果: {effect}");
+                    var empty = string.Empty;
+                    DragDrop.DoDragDrop(listBoxEdit,
+                        listBoxEdit.SelectedItem.ToString(), DragDropEffects.Link);
                 }
                 catch (Exception ex)
                 {
@@ -258,6 +259,26 @@ namespace CotrollerDemo.Views
             catch (Exception ex)
             {
                 Debug.WriteLine($"ChartDockGroup_Drop出错: {ex.Message}");
+            }
+        }
+
+        private void TextEdit_EditValueChanged(object sender, EditValueChangedEventArgs e)
+        {
+            var textEdit = sender as TextEdit;
+            var list = TempFiles.Where(file => file.Contains(textEdit.EditText));
+
+            _controller.FileNames = [];
+            list.ForEach(file =>
+            {
+                _controller.FileNames.Add(file);
+            });
+        }
+
+        private void GridControl_OnSelectedItemChanged(object sender, SelectedItemChangedEventArgs e)
+        {
+            if (e.NewItem is DeviceInfoModel devices)
+            {
+                if (_controller != null) _controller.IsConnect = devices.Status == "已连接";
             }
         }
     }

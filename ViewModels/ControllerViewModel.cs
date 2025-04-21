@@ -5,7 +5,6 @@ using Arction.Wpf.Charting.SeriesXY;
 using Arction.Wpf.Charting.Titles;
 using Arction.Wpf.Charting.Views.ViewXY;
 using CotrollerDemo.Models;
-using CotrollerDemo.Views;
 using DevExpress.Mvvm.Native;
 using DevExpress.Xpf.Core;
 using DevExpress.Xpf.Docking;
@@ -49,8 +48,7 @@ namespace CotrollerDemo.ViewModels
             set => SetProperty(ref _fileNames, value);
         }
 
-
-        private ObservableCollection<DeviceInfoModel> _devices = [];
+        private ObservableCollection<DeviceInfoModel> _devices;
 
         /// <summary>
         /// 设备列表
@@ -63,16 +61,7 @@ namespace CotrollerDemo.ViewModels
 
         //public LightningChart Chart = new();
 
-
         public List<LightningChart> Charts { get; set; } = [];
-
-        private List<SeriesPoint[]> _seriesPoints = [];
-
-        public List<SeriesPoint[]> SeriesPoints
-        {
-            get => _seriesPoints;
-            set => SetProperty(ref _seriesPoints, value);
-        }
 
         private int _chartCount = 1;
 
@@ -105,6 +94,15 @@ namespace CotrollerDemo.ViewModels
             }
         }
 
+        private bool _isConnect;
+
+        public bool IsConnect
+        {
+            get => _isConnect;
+            set => SetProperty(ref _isConnect, value);
+        }
+
+
         private bool _isDrop;
 
         /// <summary>
@@ -126,15 +124,18 @@ namespace CotrollerDemo.ViewModels
         /// </summary>
         public int[] PointNumbers = new int[8];
 
+        private readonly ResizableTextBox _text = new();
+
         private readonly ConcurrentDictionary<int, List<float>> _dataBuffer = new();
 
-        //private readonly ConcurrentQueue<List<float>> _fileData = new();
         private readonly ConcurrentQueue<float[][]> _fileData = new();
 
         public SampleDataSeries Sample { get; set; } = new();
         public LineSeriesCursor Cursor { get; set; }
 
-        public CancellationTokenSource source = new();
+        public CancellationTokenSource Source = new();
+
+        public Point MousePos = new();
 
         #endregion Property
 
@@ -201,6 +202,8 @@ namespace CotrollerDemo.ViewModels
 
         public ControllerViewModel()
         {
+
+            Devices = [];
             UpdateDeviceList();
             GlobalValues.TcpClient.StartTcpListen();
             // 使用异步方法并立即启动任务，但不等待结果
@@ -220,12 +223,25 @@ namespace CotrollerDemo.ViewModels
             OpenFolderCommand = new DelegateCommand(OpenFolder);
             DeviceQueryCommand = new DelegateCommand(UpdateDeviceList);
             ClearFolderCommand = new DelegateCommand(ClearFolder);
-            ConnectCommand = new DelegateCommand<object>(ConnectDevice);
-            DisconnectCommand = new DelegateCommand<object>(DisconnectDevice);
+            ConnectCommand = new DelegateCommand<object>(ConnectDevice, CanConnectDevice).ObservesProperty(
+                () => IsConnect
+            );
+            DisconnectCommand = new DelegateCommand<object>(DisconnectDevice, CanDisconnectDevice).ObservesProperty(
+                () => IsConnect
+            );
             DeleteFileCommand = new DelegateCommand<object>(DeleteFile);
             ShowMenuCommand = new DelegateCommand<object>(ShowMenu);
             DeleteSampleCommand = new DelegateCommand<SampleDataSeries>(DeleteSample);
             AddChartCommand = new DelegateCommand<object>(AddChart);
+        }
+
+        private bool CanConnectDevice(object arg)
+        {
+            return IsConnect;
+        }
+        private bool CanDisconnectDevice(object arg)
+        {
+            return !IsConnect;
         }
 
         /// <summary>
@@ -341,10 +357,7 @@ namespace CotrollerDemo.ViewModels
         /// </summary>
         /// <param name="sender"></param>
         /// <param name="e"></param>
-        private void ControllerViewModel_SeriesTitleMouseMoveOverOn(
-            object sender,
-            SeriesTitleDeviceMovedEventArgs e
-        )
+        private void ControllerViewModel_SeriesTitleMouseMoveOverOn(object sender, SeriesTitleDeviceMovedEventArgs e)
         {
             lock (Sample)
             {
@@ -376,15 +389,16 @@ namespace CotrollerDemo.ViewModels
         /// <param name="obj"></param>
         private void ConnectDevice(object obj)
         {
-            var selectItem = obj as DeviceInfoModel;
+            if (obj is DeviceInfoModel selectItem)
+            {
+                var linkIp = Devices.First(d =>
+                    Equals(d.IpAddress, selectItem.IpAddress)
+                );
 
-            var linkIp = Devices.First(d =>
-                selectItem != null && Equals(d.IpAddress, selectItem.IpAddress)
-            );
-
-            GlobalValues.UdpClient.IsConnectDevice(linkIp.IpAddress, true);
-
-            UpdateDeviceList();
+                GlobalValues.UdpClient.IsConnectDevice(linkIp.IpAddress, true);
+                Devices = GlobalValues.Devices;
+                IsConnect = false;
+            }
         }
 
         /// <summary>
@@ -393,15 +407,16 @@ namespace CotrollerDemo.ViewModels
         /// <param name="obj"></param>
         private void DisconnectDevice(object obj)
         {
-            var selectItem = obj as DeviceInfoModel;
+            if (obj is DeviceInfoModel selectItem)
+            {
+                var linkIp = Devices.First(d =>
+                    Equals(d.IpAddress, selectItem.IpAddress)
+                );
 
-            var linkIp = Devices.First(d =>
-                selectItem != null && Equals(d.IpAddress, selectItem.IpAddress)
-            );
-
-            GlobalValues.UdpClient.IsConnectDevice(linkIp.IpAddress, false);
-
-            UpdateDeviceList();
+                GlobalValues.UdpClient.IsConnectDevice(linkIp.IpAddress, false);
+                Devices = GlobalValues.Devices;
+                IsConnect = true;
+            }
         }
 
         /// <summary>
@@ -414,6 +429,7 @@ namespace CotrollerDemo.ViewModels
         }
 
         public int CursorUpdateCounter;
+
         /// <summary>
         /// 更新曲线数据
         /// </summary>
@@ -421,23 +437,26 @@ namespace CotrollerDemo.ViewModels
         {
             try
             {
-                if (!IsRunning || source.IsCancellationRequested)
+                if (!IsRunning || Source.IsCancellationRequested)
                     return;
 
-                // 使用TryRead而不是WaitToReadAsync，避免阻塞
-                while (GlobalValues.TcpClient.ChannelReader.TryRead(out var data))
+                lock (_dataBuffer)
                 {
-                    if (data == null)
-                        continue;
-
-                    var channelId = data.ChannelId;
-                    _dataBuffer.AddOrUpdate(channelId, _ => [.. data.Data], (_, list) =>
+                    // 使用TryRead而不是WaitToReadAsync，避免阻塞
+                    while (GlobalValues.TcpClient.ChannelReader.TryRead(out var data))
                     {
-                        list.AddRange(data.Data);
-                        return list;
-                    });
+                        if (data == null)
+                            continue;
 
-                    Interlocked.Add(ref PointNumbers[channelId], data.Data.Length);
+                        var channelId = data.ChannelId;
+                        _dataBuffer.AddOrUpdate(channelId, _ => [.. data.Data], (_, list) =>
+                        {
+                            list.AddRange(data.Data);
+                            return list;
+                        });
+
+                        Interlocked.Add(ref PointNumbers[channelId], data.Data.Length);
+                    }
                 }
 
                 // 检查是否所有通道都达到了2048点
@@ -447,14 +466,17 @@ namespace CotrollerDemo.ViewModels
 
                 // 准备所有通道的数据
                 var channelData = new float[_seriesCount][];
-                for (int i = 0; i < _seriesCount; i++)
+                lock (_dataBuffer)
                 {
-                    if (_dataBuffer.TryGetValue(i, out var buffer) && buffer.Count >= 2048)
+                    for (int i = 0; i < _seriesCount; i++)
                     {
-                        channelData[i] = [.. buffer.Take(2048)];
-                        // 移除已处理的数据
-                        buffer.RemoveRange(0, 2048);
-                        Interlocked.Add(ref PointNumbers[i], -2048);
+                        if (_dataBuffer.TryGetValue(i, out var buffer) && buffer.Count >= 2048)
+                        {
+                            channelData[i] = [.. buffer.Take(2048)];
+                            // 移除已处理的数据
+                            buffer.RemoveRange(0, 2048);
+                            Interlocked.Add(ref PointNumbers[i], -2048);
+                        }
                     }
                 }
 
@@ -462,10 +484,7 @@ namespace CotrollerDemo.ViewModels
                 if (channelData.Any(data => data == null))
                     return;
 
-                // 将处理好的数据加入到队列
-                _fileData.Enqueue(channelData);
-
-                // 在UI线程中更新图表 
+                // 在UI线程中更新图表
                 try
                 {
                     // 一次性更新所有图表
@@ -489,8 +508,10 @@ namespace CotrollerDemo.ViewModels
                     Debug.WriteLine($"Error updating chart data: {ex.Message}");
                 }
 
-                // 单独处理光标更新，使用较低的频率
-                // 每10次数据更新才更新一次光标显示
+                // 将处理好的数据加入到队列
+                _fileData.Enqueue(channelData);
+
+                // 单独处理光标更新，使用较低的频率 每10次数据更新才更新一次光标显示
                 if (Interlocked.Increment(ref CursorUpdateCounter) % 10 == 0)
                 {
                     try
@@ -618,7 +639,7 @@ namespace CotrollerDemo.ViewModels
                             // 如果太接近前一个注释，调整位置
                             if (originalY - prevY < minYSpacing)
                             {
-                                adjustedY = prevYMax + 0.3; // 在前一个注释下方放置
+                                adjustedY = prevYMax + 0.5; // 在前一个注释下方放置
                             }
                         }
 
@@ -662,11 +683,14 @@ namespace CotrollerDemo.ViewModels
         private void CleanupResources()
         {
             // 清理数据缓冲区
-            foreach (var key in _dataBuffer.Keys.ToList())
+            lock (_dataBuffer)
             {
-                if (_dataBuffer.TryRemove(key, out var buffer))
+                foreach (var key in _dataBuffer.Keys.ToList())
                 {
-                    buffer.Clear();
+                    if (_dataBuffer.TryRemove(key, out var buffer))
+                    {
+                        buffer.Clear();
+                    }
                 }
             }
 
@@ -678,78 +702,65 @@ namespace CotrollerDemo.ViewModels
 
             // 重置光标更新计数器
             CursorUpdateCounter = 0;
-
             // 清理文件数据队列
-            while (_fileData.TryDequeue(out _)) { }
-
-            // 重置CancellationTokenSource
-            if (source.IsCancellationRequested)
+            while (_fileData.TryDequeue(out var data))
             {
-                source.Dispose();
-                source = new CancellationTokenSource();
+                SaveData(data);
             }
         }
 
         /// <summary>
         /// </summary>
         /// 保存折线数据
-        private void SaveData()
+        private void SaveData(float[][] data)
         {
-            Task.Run(async () =>
+
+            try
             {
-                try
+                if (data.Length > 0)
                 {
-                    while (!source.IsCancellationRequested)
+                    string timestamp = DateTime.Now.ToString("yyyyMMddHHmmssfff");
+
+                    Parallel.For(0, _seriesCount, (channelId) =>
                     {
-                        if (_fileData.TryDequeue(out var data) && data.Length > 0)
+
+                        if (data[channelId] != null)
                         {
-                            string timestamp = DateTime.Now.ToString("yyyyMMddHHmmssfff");
+                            string fullPath = Path.Combine(
+                                FolderPath,
+                                $"{timestamp}_CH{channelId + 1}.txt"
+                            );
 
-                            for (int channelId = 0; channelId < _seriesCount; channelId++)
-                            {
-                                if (data[channelId] != null)
-                                {
-                                    string fullPath = Path.Combine(
-                                        FolderPath,
-                                        $"{timestamp}_CH{channelId + 1}.txt"
-                                    );
+                            // 使用FileShare.ReadWrite模式允许其他进程读取
+                            using var fs = new FileStream(
+                                fullPath,
+                                FileMode.Create,
+                                FileAccess.Write,
+                                FileShare.ReadWrite,  // 修改这里
+                                4096,
+                                FileOptions.Asynchronous
+                            );
 
-                                    // 使用FileShare.ReadWrite模式允许其他进程读取
-                                    await using var fs = new FileStream(
-                                        fullPath,
-                                        FileMode.Create,
-                                        FileAccess.Write,
-                                        FileShare.ReadWrite,  // 修改这里
-                                        4096,
-                                        FileOptions.Asynchronous
-                                    );
+                            // 使用using确保资源释放
+                            using var sw = new StreamWriter(fs);
 
-                                    // 使用using确保资源释放
-                                    using (var sw = new StreamWriter(fs))
-                                    {
-                                        var lines = data[channelId]
-                                            .Select((t, j) => $"{j}-{Convert.ToDouble(t)}")
-                                            .ToList();
-                                        await sw.WriteAsync(string.Join(Environment.NewLine, lines));
-                                    }
-                                }
-                            }
+                            var lines = data[channelId]
+                                .Select((t, j) => $"{j}-{Convert.ToDouble(t)}")
+                                .ToList();
+
+                            sw.Write(string.Join(Environment.NewLine, lines));
                         }
-                        else
-                        {
-                            await Task.Delay(100);
-                        }
-                    }
+                    });
                 }
-                catch (OperationCanceledException)
-                {
-                    Debug.WriteLine("SaveData task was cancelled");
-                }
-                catch (Exception ex)
-                {
-                    Debug.WriteLine($"保存数据时出错: {ex.Message}");
-                }
-            });
+            }
+            catch (OperationCanceledException)
+            {
+                Debug.WriteLine("SaveData task was cancelled");
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine($"保存数据时出错: {ex.Message}");
+            }
         }
 
         #region 右键菜单
@@ -761,6 +772,10 @@ namespace CotrollerDemo.ViewModels
         {
             if (obj is not Canvas canvas)
                 return;
+
+            // 获取鼠标当前位置
+            MousePos = System.Windows.Input.Mouse.GetPosition(canvas);
+
             if (canvas.Children[0] is LightningChart chart)
             {
                 chart.BeginUpdate();
@@ -781,55 +796,12 @@ namespace CotrollerDemo.ViewModels
                         menu.Items.Add(deleteItem);
                     }
 
-                    var textEdit = new TextEdit()
-                    {
-                        Width = 200,
-                        Height = 30,
-                        HorizontalContentAlignment = HorizontalAlignment.Left,
-                        VerticalContentAlignment = VerticalAlignment.Center,
-                    };
-
                     menu.Items.Add(
                         new MenuItem()
                         {
                             Header = "修改标题",
-                            Command = new DelegateCommand(() =>
-                            {
-                                var dialog = new DXDialog
-                                {
-                                    Content = new StackPanel
-                                    {
-                                        Children =
-                                        {
-                                            new TextBlock { Text = "输入内容：" },
-                                            textEdit,
-                                        },
-                                        HorizontalAlignment = HorizontalAlignment.Center,
-                                        VerticalAlignment = VerticalAlignment.Center,
-                                    },
-                                    Buttons = DialogButtons.OkCancel,
-                                    Width = 300,
-                                    Height = 150,
-                                    Title = "修改标题",
-                                    HorizontalAlignment = HorizontalAlignment.Center,
-                                    VerticalAlignment = VerticalAlignment.Center,
-                                    WindowStyle = WindowStyle.ToolWindow,
-                                    WindowStartupLocation = WindowStartupLocation.CenterScreen,
-                                    WindowState = WindowState.Normal,
-                                };
-
-                                if (dialog.ShowDialog() == true)
-                                {
-                                    if (
-                                        textEdit.EditValue != null
-                                        && (string)textEdit.EditValue != string.Empty
-                                    )
-                                    {
-                                        Sample.Title.Text = textEdit.Text;
-                                        UpdateCursorResult(chart);
-                                    }
-                                }
-                            }),
+                            Command = new DelegateCommand<LightningChart>(UpdateTitle),
+                            CommandParameter = chart
                         }
                     );
                 }
@@ -840,24 +812,8 @@ namespace CotrollerDemo.ViewModels
                         new MenuItem()
                         {
                             Header = "删除添加曲线",
-                            Command = new DelegateCommand(() =>
-                            {
-                                chart.BeginUpdate();
-
-                                chart.ViewXY.Annotations.RemoveAll(anno =>
-                                    anno.Text != null
-                                    && anno.Text.Split([':'], 2)[0].Length > 5
-                                    && anno.Text != "Annotation"
-                                );
-
-                                chart.ViewXY.SampleDataSeries.RemoveAll(t =>
-                                    t.Title.Text.Split([':'], 2)[0].Length > 5
-                                );
-
-                                chart.EndUpdate();
-
-                                UpdateCursorResult(chart);
-                            }),
+                            Command = new DelegateCommand<LightningChart>(DeleteAllAddSeries),
+                            CommandParameter = chart
                         }
                     );
                 }
@@ -868,10 +824,9 @@ namespace CotrollerDemo.ViewModels
                         Header = "切换图例",
                         Command = new DelegateCommand(() =>
                         {
-                            chart.ViewXY.LegendBoxes[0].Visible = !chart
-                                .ViewXY
-                                .LegendBoxes[0]
-                                .Visible;
+                            chart.ViewXY.LegendBoxes[0].Visible = !chart.ViewXY.
+                                LegendBoxes[0].
+                                Visible;
                         }),
                     }
                 );
@@ -913,20 +868,8 @@ namespace CotrollerDemo.ViewModels
                         new MenuItem()
                         {
                             Header = "删除光标",
-                            Command = new DelegateCommand(() =>
-                            {
-                                int cursorIndex = chart.ViewXY.LineSeriesCursors.IndexOf(Cursor);
-                                int annoIndex =
-                                    chart.ViewXY.LineSeriesCursors.Count <= 1 || cursorIndex == 0
-                                        ? 0
-                                        : chart.ViewXY.SampleDataSeries.Count * cursorIndex;
-                                chart.ViewXY.Annotations.RemoveRange(
-                                    annoIndex,
-                                    chart.ViewXY.SampleDataSeries.Count + 1
-                                );
-                                chart.ViewXY.LineSeriesCursors.Remove(Cursor);
-                                Cursor = null;
-                            }),
+                            Command = new DelegateCommand<LightningChart>(DeleteCursor),
+                            CommandParameter = chart
                         }
                     );
                 }
@@ -1029,13 +972,120 @@ namespace CotrollerDemo.ViewModels
             return annot;
         }
 
-        #endregion 右键菜单
+        /// <summary>
+        /// 添加注释框
+        /// </summary>
+        /// <exception cref="NotImplementedException"></exception>
+        private void AddComment(Canvas canvas)
+        {
+            var text = new ResizableTextBox() { Width = 200, Height = 100 };
 
+            Canvas.SetLeft(text, MousePos.X);
+            Canvas.SetTop(text, MousePos.Y);
+
+            canvas.Children.Add(text);
+        }
 
         /// <summary>
-        /// 异步获取文件夹下的所有文件
+        /// 修改曲线标题
         /// </summary>
-        /// <returns>异步任务</returns>
+        /// <param name="chart"></param>
+        public void UpdateTitle(LightningChart chart)
+        {
+            var textEdit = new TextEdit()
+            {
+                Width = 200,
+                Height = 30,
+                HorizontalContentAlignment = HorizontalAlignment.Left,
+                VerticalContentAlignment = VerticalAlignment.Center,
+            };
+
+            var dialog = new DXDialog
+            {
+                Content = new StackPanel
+                {
+                    Children =
+                    {
+                        new TextBlock { Text = "输入内容：" },
+                        textEdit,
+                    },
+                    HorizontalAlignment = HorizontalAlignment.Center,
+                    VerticalAlignment = VerticalAlignment.Center,
+                },
+                Buttons = DialogButtons.OkCancel,
+                Width = 300,
+                Height = 150,
+                Title = "修改标题",
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center,
+                WindowStyle = WindowStyle.ToolWindow,
+                WindowStartupLocation = WindowStartupLocation.CenterScreen,
+                WindowState = WindowState.Normal,
+            };
+
+            if (dialog.ShowDialog() == true)
+            {
+                if (
+                    textEdit.EditValue != null
+                    && (string)textEdit.EditValue != string.Empty
+                )
+                {
+                    Sample.Title.Text = textEdit.Text;
+                    UpdateCursorResult(chart);
+                }
+            }
+        }
+
+        /// <summary>
+        /// 删除图表中所有添加的曲线
+        /// </summary>
+        /// <param name="chart"></param>
+        public void DeleteAllAddSeries(LightningChart chart)
+        {
+            chart.BeginUpdate();
+
+            chart.ViewXY.Annotations.RemoveAll(anno =>
+                anno.Text != null
+                && anno.Text.Split([':'], 2)[0].Length > 5
+                && anno.Text != "Annotation"
+            );
+
+            chart.ViewXY.SampleDataSeries.RemoveAll(t =>
+                t.Title.Text.Split([':'], 2)[0].Length > 5
+            );
+
+            chart.EndUpdate();
+
+            UpdateCursorResult(chart);
+        }
+
+        /// <summary>
+        /// 删除选中的光标
+        /// </summary>
+        /// <param name="chart"></param>
+        public void DeleteCursor(LightningChart chart)
+        {
+            chart.BeginUpdate();
+            int cursorIndex = chart.ViewXY.LineSeriesCursors.IndexOf(Cursor);
+            int annoIndex =
+                chart.ViewXY.LineSeriesCursors.Count <= 1 || cursorIndex == 0
+                    ? 0
+                    : chart.ViewXY.SampleDataSeries.Count * cursorIndex;
+            chart.ViewXY.Annotations.RemoveRange(
+                annoIndex,
+                chart.ViewXY.SampleDataSeries.Count + 1
+            );
+            chart.ViewXY.LineSeriesCursors.Remove(Cursor);
+            Cursor = null;
+
+            chart.EndUpdate();
+        }
+
+        #endregion 右键菜单
+
+        /// <summary>
+        /// 获取文件夹下的所有文件
+        /// </summary>
         private void GetFolderFiles()
         {
             try
@@ -1046,32 +1096,24 @@ namespace CotrollerDemo.ViewModels
                     Directory.CreateDirectory(FolderPath);
                 }
 
-                // 使用EnumerateFiles代替GetFiles，这样文件可以在被发现时立即处理
-                // 而不需要等待整个列表构建完成
-                Task.Run(() =>
-                {
-                    List<string> fileNames = [.. Directory.EnumerateFiles(FolderPath).Select(Path.GetFileName)];
+                // 使用EnumerateFiles代替GetFiles，这样文件可以在被发现时立即处理 而不需要等待整个列表构建完成
+                Task.Run(async () =>
+                 {
+                     List<string> fileNames = [.. Directory.EnumerateFiles(FolderPath, "*.txt", SearchOption.TopDirectoryOnly).Select(Path.GetFileName)];
 
-                    Application.Current.Dispatcher.BeginInvoke(() =>
-                    {
-                        if (fileNames.Count > 0)
-                        {
-                            fileNames.ForEach(file =>
-                            {
-                                if (!FileNames.Contains(file))
-                                {
-                                    FileNames.Add(file);
-                                }
-                            });
-                        }
-                        else
-                        {
-                            FileNames = [];
-                        }
-                    });
-                });
-
-
+                     await Application.Current.Dispatcher.InvokeAsync(() =>
+                       {
+                           if (fileNames.Count > 0)
+                           {
+                               var list = fileNames.Where(f => !FileNames.Contains(f)).ToList();
+                               FileNames.AddRange(list);
+                           }
+                           else
+                           {
+                               FileNames = [];
+                           }
+                       });
+                 });
             }
             catch (Exception ex)
             {
@@ -1092,7 +1134,7 @@ namespace CotrollerDemo.ViewModels
             IsRunning = true; // 更新运行状态
 
             // 启动数据保存任务
-            SaveData();
+            //SaveData();
 
             // 添加渲染事件处理
             CompositionTarget.Rendering += CompositionTarget_Rendering;
@@ -1125,7 +1167,7 @@ namespace CotrollerDemo.ViewModels
             // 清理资源
             CleanupResources();
 
-            // 异步获取文件列表
+            // 获取文件列表
             GetFolderFiles();
         }
 
@@ -1258,45 +1300,8 @@ namespace CotrollerDemo.ViewModels
             {
                 if ((DialogResult)DXMessageBox.Show("是否清空文件夹?", "提示", MessageBoxButton.YesNo) == DialogResult.Yes)
                 {
-                    // 确保文件夹存在
-                    if (!Directory.Exists(FolderPath))
-                    {
-                        throw new DirectoryNotFoundException($"文件夹不存在: {FolderPath}");
-                    }
-
-                    // 获取文件夹中的所有文件
-                    string[] files = Directory.GetFiles(FolderPath);
-                    if (files.Length == 0)
-                    {
-                        FileNames = [];
-                        return;
-                    }
-
-                    // 失败的文件列表
-                    var failedFiles = new ConcurrentBag<string>();
-
-                    // 使用并行处理删除文件
-                    var options = new ParallelOptions()
-                    {
-                        MaxDegreeOfParallelism = Environment.ProcessorCount // 根据CPU核心数调整并行度
-                    };
-
-                    await Task.Run(() =>
-                    {
-                        Parallel.ForEach(files, options, file =>
-                        {
-                            try
-                            {
-                                // 尝试删除文件，最多重试3次
-                                DeleteFileWithRetry(file, 3);
-                            }
-                            catch (Exception ex)
-                            {
-                                failedFiles.Add(file);
-                                Debug.WriteLine($"无法删除文件 {file}: {ex.Message}");
-                            }
-                        });
-                    });
+                    // 删除文件夹中所有的文件
+                    FileOperation.Delete(FolderPath);
 
                     // 刷新文件列表
                     GetFolderFiles();
@@ -1305,45 +1310,6 @@ namespace CotrollerDemo.ViewModels
             catch (Exception ex)
             {
                 DXMessageBox.Show("清空文件夹时出错: " + ex.Message);
-            }
-        }
-
-        /// <summary>
-        /// 尝试删除文件，失败时自动重试
-        /// </summary>
-        /// <param name="filePath">文件路径</param>
-        /// <param name="maxRetries">最大重试次数</param>
-        private void DeleteFileWithRetry(string filePath, int maxRetries)
-        {
-            for (int attempt = 0; attempt < maxRetries; attempt++)
-            {
-                try
-                {
-                    // 确保文件没有只读属性
-                    if (File.Exists(filePath))
-                    {
-                        File.SetAttributes(filePath, FileAttributes.Normal);
-                        File.Delete(filePath);
-                    }
-                    return; // 删除成功，直接返回
-                }
-                catch (IOException)
-                {
-                    if (attempt == maxRetries - 1) // 最后一次尝试
-                        throw;
-
-                    // 文件可能被占用，等待一小段时间
-                    Thread.Sleep(100);
-                }
-                catch (UnauthorizedAccessException)
-                {
-                    if (attempt == maxRetries - 1) // 最后一次尝试
-                        throw;
-                    // 尝试强制GC回收，释放文件句柄
-                    GC.Collect();
-                    GC.WaitForPendingFinalizers();
-                    Thread.Sleep(100);
-                }
             }
         }
 
@@ -1366,9 +1332,14 @@ namespace CotrollerDemo.ViewModels
                         string file = Path.Combine(FolderPath, fileName);
                         try
                         {
-                            // 使用带重试的文件删除方法
-                            DeleteFileWithRetry(file, 3);
-                            GetFolderFiles();
+                            // // 确保文件没有只读属性
+                            if (File.Exists(file))
+                            {
+                                File.Delete(file);
+                                FileNames.Remove(fileName);
+                            }
+
+                            //GetFolderFiles();
                             DXMessageBox.Show("文件已删除！");
                         }
                         catch (Exception ex)
@@ -1429,9 +1400,10 @@ namespace CotrollerDemo.ViewModels
                     // 从Charts集合中移除图表
                     if (Charts != null && Charts.Contains(chart))
                     {
-                        Charts.Remove(chart);
                         // 释放图表资源
                         chart.Dispose();
+
+                        Charts.Remove(chart);
                     }
                     layPanel.Closed = true;
                 });
@@ -1471,11 +1443,7 @@ namespace CotrollerDemo.ViewModels
                                     Title = new SeriesTitle() { Text = fileData },
                                     LineStyle =
                                     {
-                                        Color = ChartTools.CalcGradient(
-                                            GenerateUniqueColor(),
-                                            Colors.White,
-                                            50
-                                        ),
+                                        Color = ChartTools.CalcGradient(GenerateUniqueColor(),Colors.White,50)
                                     },
                                     SampleFormat = SampleFormat.SingleFloat,
                                 };
@@ -1527,21 +1495,7 @@ namespace CotrollerDemo.ViewModels
             }
         }
 
-        private readonly ResizableTextBox _text = new();
 
-        /// <summary>
-        /// 添加注释
-        /// </summary>
-        /// <exception cref="NotImplementedException"></exception>
-        private void AddComment(Canvas canvas)
-        {
-            var text = new ResizableTextBox() { Width = 200, Height = 100 };
-
-            Canvas.SetLeft(text, 50);
-            Canvas.SetTop(text, 50);
-
-            canvas.Children.Add(text);
-        }
 
         #endregion Main
     }

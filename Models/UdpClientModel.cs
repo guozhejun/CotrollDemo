@@ -40,7 +40,7 @@ namespace CotrollerDemo.Models
         /// <returns></returns>
         public void StartUdpListen()
         {
-            GlobalValues.Devices = [];
+            //GlobalValues.Devices = [];
             byte[] typeValues = [1, 1, 1, 0, 0, 0, 0]; // 类型值
 
             byte[] bufferBytes =
@@ -106,13 +106,32 @@ namespace CotrollerDemo.Models
 
                 DeviceConnectState = data[31];
 
-                GlobalValues.Devices.Add(new DeviceInfoModel()
+                var dev = new DeviceInfoModel()
                 {
                     IpAddress = _receivePoint.Address,
                     SerialNum = string.Join(":", deviceSerialNum),
                     Status = DeviceConnectState is 1 ? "已连接" : "未连接",
                     LinkIp = linkIp
-                });
+                };
+
+                if (!GlobalValues.Devices.Contains(dev))
+                {
+                    GlobalValues.Devices.Add(dev);
+                }
+                else
+                {
+                    var tempDev = GlobalValues.Devices.First(d => Equals(d.IpAddress, dev.IpAddress));
+                    tempDev.Status = dev.Status;
+                }
+
+            }
+            else
+            {
+                var device = GlobalValues.Devices.First(d => Equals(d.IpAddress, _receivePoint.Address));
+                if (data.Last() == 0)
+                {
+                    device.Status = device.Status == "未连接" ? "已连接" : "未连接";
+                }
             }
         }
 
