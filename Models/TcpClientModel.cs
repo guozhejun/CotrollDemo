@@ -75,17 +75,14 @@ namespace CotrollerDemo.Models
                     Tcp = new TcpListener(GlobalValues.GetIpAdders(), 9089);
                     Tcp.Start();
 
-                    while (true)
-                    {
-                        Client = await Tcp.AcceptTcpClientAsync().ConfigureAwait(false);
+                    Client = await Tcp.AcceptTcpClientAsync().ConfigureAwait(false);
 
-                        Client.ReceiveBufferSize = 1072;
-                        Client.ReceiveTimeout = 3000;
+                    Client.ReceiveBufferSize = 1072;
+                    Client.ReceiveTimeout = 3000;
 
-                        Stream = Client.GetStream();
+                    Stream = Client.GetStream();
 
-                        ReceiveDataClient();
-                    }
+                    ReceiveDataClient();
                 }
                 catch (Exception ex)
                 {
@@ -137,7 +134,9 @@ namespace CotrollerDemo.Models
                                             };
 
                                             // 发送数据到通道
-                                            ChannelWriter?.WriteAsync(receiveData).ConfigureAwait(false);
+                                            ChannelWriter.WriteAsync(receiveData).ConfigureAwait(false).GetAwaiter()
+                                               .GetResult();
+
                                         }
                                     }
                                 }

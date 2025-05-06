@@ -1,0 +1,10 @@
+﻿[*.cs]
+
+# Default severity for analyzer diagnostics with category 'Spellchecker'
+dotnet_analyzer_diagnostic.category-Spellchecker.severity = none
+
+# Default severity for analyzer diagnostics with category 'Async/await'
+dotnet_analyzer_diagnostic.category-Async/await.severity = silent
+
+# CRR0029: ConfigureAwait(true) is called implicitly
+dotnet_diagnostic.CRR0029.severity = silent

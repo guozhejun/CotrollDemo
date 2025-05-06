@@ -10,6 +10,7 @@
     xmlns:dxg="http://schemas.devexpress.com/winfx/2008/xaml/grid"
     xmlns:dxlc="http://schemas.devexpress.com/winfx/2008/xaml/layoutcontrol"
     xmlns:dxmvvm="http://schemas.devexpress.com/winfx/2008/xaml/mvvm"
+    xmlns:i="http://schemas.microsoft.com/xaml/behaviors"
     xmlns:local="clr-namespace:CotrollerDemo.Views"
     xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
     d:DesignHeight="600"
@@ -138,7 +139,8 @@
                             Margin="5,0"
                             Command="{Binding ConnectCommand}"
                             CommandParameter="{Binding ElementName=GridControl, Path=SelectedItem}"
-                            Content="连接" />
+                            Content="连接"
+                            IsEnabled="{Binding CanConnect}" />
                     </dxlc:LayoutItem>
                     <dxlc:LayoutItem HorizontalAlignment="Left" VerticalAlignment="Top">
                         <dx:SimpleButton
@@ -146,7 +148,8 @@
                             Margin="5,0"
                             Command="{Binding DisconnectCommand}"
                             CommandParameter="{Binding ElementName=GridControl, Path=SelectedItem}"
-                            Content="断开" />
+                            Content="断开"
+                            IsEnabled="{Binding CanDisConnect}" />
                     </dxlc:LayoutItem>
                 </dxlc:LayoutGroup>
             </dxlc:LayoutGroup>
@@ -161,7 +164,7 @@
                         LogicalTreeStructure="Optimized"
                         ShowContentWhenDragging="False">
                         <dxdo:LayoutGroup x:Name="ChartDockGroup">
-                            <dxdo:LayoutPanel Drop="ChartDockGroup_Drop">
+                            <dxdo:LayoutPanel x:Name="ChartLayPanel" Drop="ChartLayPanel_Drop">
                                 <Canvas x:Name="CanvasBase" SizeChanged="CanvasBase_SizeChanged">
                                     <dxmvvm:Interaction.Triggers>
                                         <dxmvvm:EventToCommand
@@ -178,7 +181,6 @@
                         </dxdo:LayoutGroup>
                     </dxdo:DockLayoutManager>
                 </dxlc:LayoutItem>
-
                 <dxlc:LayoutGroup HorizontalAlignment="Right" Orientation="Vertical">
                     <dxlc:LayoutGroup HorizontalAlignment="Right" Orientation="Horizontal">
                         <dxlc:LayoutItem

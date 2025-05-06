@@ -1,24 +1,11 @@
-﻿using Arction.Wpf.Charting;
-using Arction.Wpf.Charting.Annotations;
-using Arction.Wpf.Charting.Axes;
-using Arction.Wpf.Charting.SeriesXY;
-using Arction.Wpf.Charting.Titles;
-using Arction.Wpf.Charting.Views.ViewXY;
-using CotrollerDemo.Models;
-using DevExpress.Mvvm.Native;
-using DevExpress.Xpf.Core;
-using DevExpress.Xpf.Docking;
-using DryIoc.ImTools;
-using Prism.Commands;
-using Prism.Mvvm;
-using System;
+﻿using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.Diagnostics;
-using System.Globalization;
 using System.IO;
 using System.Linq;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
@@ -26,6 +13,18 @@ using System.Windows.Controls;
 using System.Windows.Forms;
 using System.Windows.Media;
 using System.Windows.Threading;
+using Arction.Wpf.Charting;
+using Arction.Wpf.Charting.Annotations;
+using Arction.Wpf.Charting.Axes;
+using Arction.Wpf.Charting.SeriesXY;
+using Arction.Wpf.Charting.Titles;
+using Arction.Wpf.Charting.Views.ViewXY;
+using CotrollerDemo.Models;
+using DevExpress.Xpf.Bars;
+using DevExpress.Xpf.Core;
+using DevExpress.Xpf.Docking;
+using Prism.Commands;
+using Prism.Mvvm;
 using Application = System.Windows.Application;
 using HorizontalAlignment = System.Windows.HorizontalAlignment;
 using ResizableTextBox = CotrollerDemo.Views.ResizableTextBox;
@@ -33,7 +32,7 @@ using TextEdit = DevExpress.Xpf.Editors.TextEdit;
 
 namespace CotrollerDemo.ViewModels
 {
-    public class ControllerViewModel : BindableBase
+    public class ControllerViewModel : BindableBase, IDisposable
     {
         #region Property
 
@@ -94,14 +93,21 @@ namespace CotrollerDemo.ViewModels
             }
         }
 
-        private bool _isConnect;
+        private bool _canConnect;
 
-        public bool IsConnect
+        public bool CanConnect
         {
-            get => _isConnect;
-            set => SetProperty(ref _isConnect, value);
+            get => _canConnect;
+            set => SetProperty(ref _canConnect, value);
         }
 
+        private bool _canDisConnect;
+
+        public bool CanDisConnect
+        {
+            get => _canDisConnect;
+            set => SetProperty(ref _canDisConnect, value);
+        }
 
         private bool _isDrop;
 
@@ -126,16 +132,26 @@ namespace CotrollerDemo.ViewModels
 
         private readonly ResizableTextBox _text = new();
 
-        private readonly ConcurrentDictionary<int, List<float>> _dataBuffer = new();
+        public readonly ConcurrentDictionary<int, List<float>> DataBuffer = new();
 
-        private readonly ConcurrentQueue<float[][]> _fileData = new();
+        public readonly ConcurrentQueue<float[][]> FileData = new();
 
         public SampleDataSeries Sample { get; set; } = new();
         public LineSeriesCursor Cursor { get; set; }
 
         public CancellationTokenSource Source = new();
 
-        public Point MousePos = new();
+        public Point MousePos;
+
+        public ObservableCollection<IControllerAction> Res;
+
+        public readonly int Points = 10240;
+
+        private readonly object _updateLock = new();
+        private readonly Dictionary<int, Queue<float[]>> _channelBuffers = new();
+        //private const int BufferThreshold = 2048; // 缓冲区阈值
+
+        private FileSystemWatcher _fileWatcher;
 
         #endregion Property
 
@@ -187,11 +203,6 @@ namespace CotrollerDemo.ViewModels
         public DelegateCommand<object> ShowMenuCommand { get; set; }
 
         /// <summary>
-        /// 右键删除曲线
-        /// </summary>
-        public DelegateCommand<SampleDataSeries> DeleteSampleCommand { get; set; }
-
-        /// <summary>
         /// 添加图表
         /// </summary>
         public DelegateCommand<object> AddChartCommand { get; set; }
@@ -202,15 +213,20 @@ namespace CotrollerDemo.ViewModels
 
         public ControllerViewModel()
         {
+            // 初始化时不要立即加载所有文件，可以延迟加载或限制数量
+            FileNames = new ObservableCollection<string>();
 
             Devices = [];
             UpdateDeviceList();
             GlobalValues.TcpClient.StartTcpListen();
-            // 使用异步方法并立即启动任务，但不等待结果
-            GetFolderFiles();
+
+            // 初始化文件监视器
+            InitializeFileWatcher();
+
+            // 可选择性加载文件，或者使用"加载更多"按钮
+            Task.Run(() => GetFolderFiles());
             var chart = CreateChart();
             Charts.Add(chart);
-            //SaveData();
 
             IsRunning = false;
 
@@ -223,25 +239,11 @@ namespace CotrollerDemo.ViewModels
             OpenFolderCommand = new DelegateCommand(OpenFolder);
             DeviceQueryCommand = new DelegateCommand(UpdateDeviceList);
             ClearFolderCommand = new DelegateCommand(ClearFolder);
-            ConnectCommand = new DelegateCommand<object>(ConnectDevice, CanConnectDevice).ObservesProperty(
-                () => IsConnect
-            );
-            DisconnectCommand = new DelegateCommand<object>(DisconnectDevice, CanDisconnectDevice).ObservesProperty(
-                () => IsConnect
-            );
+            ConnectCommand = new DelegateCommand<object>(ConnectDevice);
+            DisconnectCommand = new DelegateCommand<object>(DisconnectDevice);
             DeleteFileCommand = new DelegateCommand<object>(DeleteFile);
             ShowMenuCommand = new DelegateCommand<object>(ShowMenu);
-            DeleteSampleCommand = new DelegateCommand<SampleDataSeries>(DeleteSample);
             AddChartCommand = new DelegateCommand<object>(AddChart);
-        }
-
-        private bool CanConnectDevice(object arg)
-        {
-            return IsConnect;
-        }
-        private bool CanDisconnectDevice(object arg)
-        {
-            return !IsConnect;
         }
 
         /// <summary>
@@ -251,7 +253,7 @@ namespace CotrollerDemo.ViewModels
         {
             var chart = new LightningChart();
 
-            chart.PreviewMouseRightButtonDown += (s, e) => e.Handled = true;
+            chart.PreviewMouseRightButtonDown += (_, e) => e.Handled = true;
 
             chart.BeginUpdate();
 
@@ -264,6 +266,7 @@ namespace CotrollerDemo.ViewModels
 
             var view = chart.ViewXY;
 
+            view.Margins = new Thickness(40, 30, 10, 30);
             view.DropOldEventMarkers = true;
             view.DropOldSeriesData = true;
             chart.Background = Brushes.Black;
@@ -277,7 +280,7 @@ namespace CotrollerDemo.ViewModels
             view.XAxes[0].ScrollMode = XAxisScrollMode.Scrolling;
             view.XAxes[0].AllowUserInteraction = true;
             view.XAxes[0].AllowScrolling = false;
-            view.XAxes[0].SetRange(0, 2048);
+            view.XAxes[0].SetRange(0, Points);
             view.XAxes[0].ValueType = AxisValueType.Number;
             view.XAxes[0].AutoFormatLabels = false;
             view.XAxes[0].LabelsNumberFormat = "N0";
@@ -333,7 +336,7 @@ namespace CotrollerDemo.ViewModels
                     SampleFormat = SampleFormat.SingleFloat,
                 };
 
-                series.MouseOverOn += (sender, args) =>
+                series.MouseOverOn += (_, _) =>
                 {
                     Sample = series;
                 };
@@ -345,7 +348,7 @@ namespace CotrollerDemo.ViewModels
 
             chart.ViewXY.ZoomToFit();
             chart.AfterRendering += Chart_AfterRendering;
-            chart.SizeChanged += new SizeChangedEventHandler(Chart_SizeChanged);
+            chart.SizeChanged += Chart_SizeChanged;
             chart.EndUpdate();
             CreateLineSeriesCursor(chart);
 
@@ -357,7 +360,10 @@ namespace CotrollerDemo.ViewModels
         /// </summary>
         /// <param name="sender"></param>
         /// <param name="e"></param>
-        private void ControllerViewModel_SeriesTitleMouseMoveOverOn(object sender, SeriesTitleDeviceMovedEventArgs e)
+        private void ControllerViewModel_SeriesTitleMouseMoveOverOn(
+            object sender,
+            SeriesTitleDeviceMovedEventArgs e
+        )
         {
             lock (Sample)
             {
@@ -391,13 +397,12 @@ namespace CotrollerDemo.ViewModels
         {
             if (obj is DeviceInfoModel selectItem)
             {
-                var linkIp = Devices.First(d =>
-                    Equals(d.IpAddress, selectItem.IpAddress)
-                );
+                var linkIp = Devices.First(d => Equals(d.IpAddress, selectItem.IpAddress));
 
                 GlobalValues.UdpClient.IsConnectDevice(linkIp.IpAddress, true);
                 Devices = GlobalValues.Devices;
-                IsConnect = false;
+                CanConnect = false;
+                CanDisConnect = true;
             }
         }
 
@@ -409,13 +414,12 @@ namespace CotrollerDemo.ViewModels
         {
             if (obj is DeviceInfoModel selectItem)
             {
-                var linkIp = Devices.First(d =>
-                    Equals(d.IpAddress, selectItem.IpAddress)
-                );
+                var linkIp = Devices.First(d => Equals(d.IpAddress, selectItem.IpAddress));
 
                 GlobalValues.UdpClient.IsConnectDevice(linkIp.IpAddress, false);
                 Devices = GlobalValues.Devices;
-                IsConnect = true;
+                CanConnect = true;
+                CanDisConnect = false;
             }
         }
 
@@ -440,101 +444,131 @@ namespace CotrollerDemo.ViewModels
                 if (!IsRunning || Source.IsCancellationRequested)
                     return;
 
-                lock (_dataBuffer)
-                {
-                    // 使用TryRead而不是WaitToReadAsync，避免阻塞
-                    while (GlobalValues.TcpClient.ChannelReader.TryRead(out var data))
-                    {
-                        if (data == null)
-                            continue;
-
-                        var channelId = data.ChannelId;
-                        _dataBuffer.AddOrUpdate(channelId, _ => [.. data.Data], (_, list) =>
-                        {
-                            list.AddRange(data.Data);
-                            return list;
-                        });
-
-                        Interlocked.Add(ref PointNumbers[channelId], data.Data.Length);
-                    }
-                }
-
-                // 检查是否所有通道都达到了2048点
-                bool allChannelsReady = PointNumbers.All(count => count >= 2048);
-                if (!allChannelsReady)
-                    return;
-
-                // 准备所有通道的数据
-                var channelData = new float[_seriesCount][];
-                lock (_dataBuffer)
+                // 初始化通道缓冲区
+                lock (_updateLock)
                 {
                     for (int i = 0; i < _seriesCount; i++)
                     {
-                        if (_dataBuffer.TryGetValue(i, out var buffer) && buffer.Count >= 2048)
+                        if (!_channelBuffers.ContainsKey(i))
                         {
-                            channelData[i] = [.. buffer.Take(2048)];
-                            // 移除已处理的数据
-                            buffer.RemoveRange(0, 2048);
-                            Interlocked.Add(ref PointNumbers[i], -2048);
+                            _channelBuffers[i] = new Queue<float[]>();
                         }
                     }
                 }
 
-                // 检查是否所有通道都有有效数据，如果没有则跳过此次更新
-                if (channelData.Any(data => data == null))
-                    return;
-
-                // 在UI线程中更新图表
-                try
+                // 使用TryRead读取数据
+                while (GlobalValues.TcpClient.ChannelReader.TryRead(out var data))
                 {
-                    // 一次性更新所有图表
-                    foreach (var chart in Charts)
+                    if (data == null || data.Data == null || data.Data.Length == 0)
+                        continue;
+
+                    lock (_updateLock)
                     {
-                        chart.BeginUpdate();
-                        // 只更新数据，不更新光标
-                        for (int i = 0; i < _seriesCount; i++)
+                        if (data.ChannelId >= 0 && data.ChannelId < _seriesCount)
                         {
-                            if (channelData[i] != null)
+                            // 将数据分段存入对应通道的缓冲区
+                            _channelBuffers[data.ChannelId].Enqueue(data.Data);
+                            Interlocked.Add(ref PointNumbers[data.ChannelId], data.Data.Length);
+
+                            // 检查是否所有通道都有足够的数据
+                            if (CheckAllChannelsReady())
                             {
-                                var series = chart.ViewXY.SampleDataSeries[i];
-                                series.SamplesSingle = channelData[i];
+                                ProcessAndUpdateCharts();
                             }
                         }
-                        chart.EndUpdate();
-                    }
-                }
-                catch (Exception ex)
-                {
-                    Debug.WriteLine($"Error updating chart data: {ex.Message}");
-                }
-
-                // 将处理好的数据加入到队列
-                _fileData.Enqueue(channelData);
-
-                // 单独处理光标更新，使用较低的频率 每10次数据更新才更新一次光标显示
-                if (Interlocked.Increment(ref CursorUpdateCounter) % 10 == 0)
-                {
-                    try
-                    {
-                        foreach (var chart in Charts)
+                        else
                         {
-                            UpdateCursorResult(chart);
+                            Debug.WriteLine($"无效的通道ID: {data.ChannelId}");
                         }
                     }
-                    catch (Exception ex)
-                    {
-                        Debug.WriteLine($"Error updating cursor: {ex.Message}");
-                    }
                 }
-            }
-            catch (OperationCanceledException)
-            {
-                // 任务被取消，正常退出
-                Debug.WriteLine("UpdateSeriesData task was cancelled");
             }
             catch (Exception ex)
             {
-                Debug.WriteLine($"Error in UpdateSeriesData: {ex.Message}");
+                Debug.WriteLine($"UpdateSeriesData error: {ex.Message}");
+            }
+        }
+
+        private bool CheckAllChannelsReady()
+        {
+            return _channelBuffers.All(buffer => buffer.Value.Sum(arr => arr.Length) >= Points);
+        }
+
+        private void ProcessAndUpdateCharts()
+        {
+            try
+            {
+                var channelData = new float[_seriesCount][];
+
+                // 为每个通道准备数据
+                for (int i = 0; i < _seriesCount; i++)
+                {
+                    var buffer = new List<float>();
+                    var queue = _channelBuffers[i];
+
+                    // 从队列中取出数据直到达到所需点数
+                    while (queue.Count > 0 && buffer.Count < Points)
+                    {
+                        var data = queue.Peek();
+                        if (buffer.Count + data.Length <= Points)
+                        {
+                            buffer.AddRange(queue.Dequeue());
+                        }
+                        else
+                        {
+                            // 只取需要的部分
+                            var remaining = Points - buffer.Count;
+                            buffer.AddRange(data.Take(remaining));
+                            var newArray = data.Skip(remaining).ToArray();
+                            queue.Dequeue();
+                            if (newArray.Length > 0)
+                            {
+                                queue.Enqueue(newArray);
+                            }
+                        }
+                    }
+
+                    channelData[i] = buffer.ToArray();
+                    Interlocked.Add(ref PointNumbers[i], -Points);
+                }
+
+                // 更新图表
+                Application.Current.Dispatcher.Invoke(() =>
+                {
+                    foreach (var chart in Charts)
+                    {
+                        try
+                        {
+                            chart.BeginUpdate();
+                            for (int i = 0; i < _seriesCount; i++)
+                            {
+                                var series = chart.ViewXY.SampleDataSeries[i];
+                                if (series != null && channelData[i] != null)
+                                {
+                                    series.SamplesSingle = channelData[i];
+                                }
+                            }
+                            chart.EndUpdate();
+
+                            // 更新光标
+                            if (Interlocked.Increment(ref CursorUpdateCounter) % 10 == 0)
+                            {
+                                UpdateCursorResult(chart);
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            Debug.WriteLine($"Chart update error: {ex.Message}");
+                        }
+                    }
+                });
+
+                // 将数据加入文件保存队列
+                FileData.Enqueue(channelData);
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine($"ProcessAndUpdateCharts error: {ex.Message}");
             }
         }
 
@@ -550,6 +584,22 @@ namespace CotrollerDemo.ViewModels
         }
 
         /// <summary>
+        /// 计算注释宽度
+        /// </summary>
+        /// <param name="text">注释文本</param>
+        /// <param name="fontSize">字体大小</param>
+        /// <returns>适合文本的宽度（基于经验的计算）</returns>
+        private static double CalculateAnnotationWidth(string text, double fontSize = 14)
+        {
+            // 基于字体大小和文本长度计算宽度 每个字符平均宽度假设为字体大小的0.7倍 添加额外的边距以确保文本完全显示
+            double width = text.Length * fontSize * 0.7 + fontSize * 2;
+            return Math.Min(width, 220);
+        }
+
+        public Dictionary<object, double> CursorlDict { get; set; } = [];
+        public Dictionary<object, double> TempCursorlDict { get; set; } = [];
+
+        /// <summary>
         /// 更新光标结果
         /// </summary>
         public void UpdateCursorResult(LightningChart chart)
@@ -560,13 +610,26 @@ namespace CotrollerDemo.ViewModels
                 //获取注释
                 var cursorValues = chart.ViewXY.Annotations;
 
-                var targetYCoord = (float)chart.ViewXY.GetMarginsRect().Bottom - 20;
+                // 获取图表可见区域的范围
+                var visibleRect = chart.ViewXY.GetMarginsRect();
+                chart.ViewXY.XAxes[0].ValueToCoord(chart.ViewXY.XAxes[0].Maximum);
+
+                var targetYCoord = (float)visibleRect.Bottom - 20;
                 chart.ViewXY.YAxes[0].CoordToValue(targetYCoord, out var y);
 
                 // 更新每条曲线的注释
                 var cursors = chart.ViewXY.LineSeriesCursors;
 
                 var series = chart.ViewXY.SampleDataSeries;
+
+                // 获取chart控件宽度
+                double chartWidth = chart.ActualWidth > 0 ? chart.ActualWidth : 800; // 兜底
+
+                var xAxis = chart.ViewXY.XAxes[0];
+                double xAxisMin = xAxis.Minimum;
+                double xAxisMax = xAxis.Maximum;
+                double xAxisVisible = xAxisMax - xAxisMin;
+                double xPerPixel = chartWidth > 0 ? xAxisVisible / chartWidth : 0;
 
                 for (int i = 0; i < cursors.Count; i++)
                 {
@@ -582,26 +645,39 @@ namespace CotrollerDemo.ViewModels
                     foreach (var t in series)
                     {
                         var title = t.Title.Text.Split(':')[0];
-                        if (SolveValueAccurate(t, cursors[i].ValueAtXAxis, out double seriesYValue)
+                        if (
+                            SolveValueAccurate(t, cursors[i].ValueAtXAxis, out double seriesYValue)
                             && !string.IsNullOrEmpty(title)
                             && title.Length > 0
                         )
                         {
                             // 保存注释信息
-                            validAnnotations.Add
+                            validAnnotations.Add(
                                 (
-                                    (seriesNumber + cursorIndex, seriesYValue, $"{title}: {Math.Round(seriesYValue, 2)}", title)
-                                );
+                                    seriesNumber + cursorIndex,
+                                    seriesYValue,
+                                    $"{title}: {Math.Round(seriesYValue, 2)}",
+                                    title
+                                )
+                            );
 
-                            // 更新曲线标题
-                            t.Title.Text = $"{title}: {Math.Round(seriesYValue, 2)}";
+                            var cursor = CursorlDict.First(tuple => tuple.Key == cursors[i].Tag);
+                            if (!cursors[i].ValueAtXAxis.Equals(cursor.Value) || TempCursorlDict.Values == CursorlDict.Values)
+                            {
+                                // 更新曲线标题
+                                t.Title.Text = $"{title}: {Math.Round(seriesYValue, 2)}";
+                            }
                         }
                         else
                         {
                             // 如果无法解析Y值，确保注释是隐藏的
                             if (seriesNumber + cursorIndex < cursorValues.Count)
                             {
-                                if (cursorValues[seriesNumber + cursorIndex].Text.Split([':'], 2)[0].Length > 4)
+                                if (
+                                    cursorValues[seriesNumber + cursorIndex]
+                                        .Text.Split([':'], 2)[0]
+                                        .Length > 4
+                                )
                                 {
                                     cursorValues[seriesNumber + cursorIndex] = CreateAnnotation(
                                         chart
@@ -613,17 +689,29 @@ namespace CotrollerDemo.ViewModels
                         seriesNumber++;
                     }
 
+                    CursorlDict[cursors[i].Tag] = cursors[i].ValueAtXAxis;
                     // 第二步：按Y值排序注释
                     validAnnotations.Sort((a, b) => a.YValue.CompareTo(b.YValue));
 
                     // 第三步：分配注释位置，避免重叠
                     const double minYSpacing = 0.6; // 注释之间的最小Y轴间距
 
+                    // 检查光标是否靠近右边界
+                    double cursorX = cursors[i].ValueAtXAxis;
+
+                    // 判断光标是否在图表右侧区域（例如：最后20%区域）
+                    bool isNearRightEdge = (cursorX > (xAxisMax - xAxisVisible * 0.1));
+
+                    // 注释与光标的距离为固定10像素
+                    double annotationOffsetPx = 10;
+
                     // 应用排序后的位置
                     for (int j = 0; j < validAnnotations.Count; j++)
                     {
                         var annotation = cursorValues[validAnnotations[j].Index];
                         var originalY = validAnnotations[j].YValue;
+                        string annotationText =
+                            $"{validAnnotations[j].Title}: {Math.Round(validAnnotations[j].YValue, 2)}";
 
                         // 调整Y位置以避免重叠
                         double adjustedY = originalY;
@@ -643,31 +731,63 @@ namespace CotrollerDemo.ViewModels
                             }
                         }
 
-                        // 设置注释位置
-                        annotation.AxisValuesBoundaries.XMax =
-                              cursors[i].ValueAtXAxis
-                            + (validAnnotations[j].Title.Length + validAnnotations[j]
-                                    .YValue.ToString(CultureInfo.InvariantCulture)
-                                    .Length) * 3 * Charts.Count;
-                        annotation.AxisValuesBoundaries.XMin = cursors[i].ValueAtXAxis + 10;
+                        // 根据文本计算所需的宽度
+                        double requiredWidthPx = CalculateAnnotationWidth(annotationText);
+
+                        // 根据光标位置调整注释位置（左侧或右侧）
+
+                        double requiredWidth = requiredWidthPx * xPerPixel;
+                        double annotationOffset = annotationOffsetPx * xPerPixel;
+                        if (isNearRightEdge)
+                        {
+                            annotation.AxisValuesBoundaries.XMax = cursorX - 2 * xPerPixel;
+                            annotation.AxisValuesBoundaries.XMin =
+                                annotation.AxisValuesBoundaries.XMax - requiredWidth;
+                        }
+                        else
+                        {
+                            annotation.AxisValuesBoundaries.XMin = cursorX + annotationOffset;
+                            annotation.AxisValuesBoundaries.XMax =
+                                annotation.AxisValuesBoundaries.XMin + requiredWidth;
+                        }
+
                         annotation.AxisValuesBoundaries.YMax = adjustedY + 0.25;
                         annotation.AxisValuesBoundaries.YMin = adjustedY - 0.25;
 
                         // 设置注释内容
-                        annotation.Text = validAnnotations[j].Text;
+                        annotation.Text = annotationText;
                         annotation.Visible = true;
                     }
 
                     // 设置X轴注释位置和内容
-                    cursorValues[cursorIndex].AxisValuesBoundaries.XMax =
-                        cursors[i].ValueAtXAxis + 45 * Charts.Count;
-                    cursorValues[cursorIndex].AxisValuesBoundaries.XMin =
-                        cursors[i].ValueAtXAxis + 15;
+                    string xAnnotationText = $"X: {Math.Round(cursors[i].ValueAtXAxis, 2)}";
+                    cursorValues[cursorIndex].Text = xAnnotationText;
+
+                    // 计算所需的宽度
+                    double xRequiredWidthPx = CalculateAnnotationWidth(xAnnotationText);
+
+                    // 同样根据光标位置调整X轴注释
+
+                    double xRequiredWidth = xRequiredWidthPx * xPerPixel;
+                    double perPixelLocal = annotationOffsetPx * xPerPixel;
+                    if (isNearRightEdge)
+                    {
+                        cursorValues[cursorIndex].AxisValuesBoundaries.XMax =
+                            cursorX - 2 * xPerPixel;
+                        cursorValues[cursorIndex].AxisValuesBoundaries.XMin =
+                            cursorValues[cursorIndex].AxisValuesBoundaries.XMax - xRequiredWidth;
+                    }
+                    else
+                    {
+                        cursorValues[cursorIndex].AxisValuesBoundaries.XMin =
+                            cursorX + perPixelLocal;
+                        cursorValues[cursorIndex].AxisValuesBoundaries.XMax =
+                            cursorValues[cursorIndex].AxisValuesBoundaries.XMin + xRequiredWidth;
+                    }
+
                     cursorValues[cursorIndex].AxisValuesBoundaries.YMax = y + 0.5;
                     cursorValues[cursorIndex].AxisValuesBoundaries.YMin = y;
                     cursorValues[cursorIndex].Visible = true;
-                    cursorValues[cursorIndex].Text =
-                        $"X: {Math.Round(cursors[i].ValueAtXAxis, 2)}";
                 }
                 chart.EndUpdate();
             }
@@ -683,84 +803,100 @@ namespace CotrollerDemo.ViewModels
         private void CleanupResources()
         {
             // 清理数据缓冲区
-            lock (_dataBuffer)
-            {
-                foreach (var key in _dataBuffer.Keys.ToList())
-                {
-                    if (_dataBuffer.TryRemove(key, out var buffer))
-                    {
-                        buffer.Clear();
-                    }
-                }
-            }
+            //lock (_dataBuffer)
+            //{
+            //    foreach (var key in _dataBuffer.Keys.ToList())
+            //    {
+            //        if (_dataBuffer.TryRemove(key, out var buffer))
+            //        {
+            //            buffer.Clear();
+            //        }
+            //    }
+            //}
 
-            // 重置点数计数
-            for (int i = 0; i < PointNumbers.Length; i++)
-            {
-                PointNumbers[i] = 0;
-            }
+            //// 重置点数计数
+            //for (int i = 0; i < PointNumbers.Length; i++)
+            //{
+            //    PointNumbers[i] = 0;
+            //}
 
             // 重置光标更新计数器
             CursorUpdateCounter = 0;
             // 清理文件数据队列
-            while (_fileData.TryDequeue(out var data))
-            {
-                SaveData(data);
-            }
+            while (FileData.TryDequeue(out _)) { }
         }
 
         /// <summary>
-        /// </summary>
         /// 保存折线数据
-        private void SaveData(float[][] data)
+        /// </summary>
+        private void SaveData()
         {
-
-            try
+            Task.Run(async () =>
             {
-                if (data.Length > 0)
+                try
                 {
-                    string timestamp = DateTime.Now.ToString("yyyyMMddHHmmssfff");
-
-                    Parallel.For(0, _seriesCount, (channelId) =>
+                    while (IsRunning)
                     {
-
-                        if (data[channelId] != null)
+                        if (FileData.TryDequeue(out var data))
                         {
-                            string fullPath = Path.Combine(
-                                FolderPath,
-                                $"{timestamp}_CH{channelId + 1}.txt"
-                            );
+                            if (data == null || data.Length != _seriesCount)
+                            {
+                                continue;
+                            }
 
-                            // 使用FileShare.ReadWrite模式允许其他进程读取
-                            using var fs = new FileStream(
+                            string timestamp = DateTime.Now.ToString("yyyyMMddHHmmssfff");
+
+                            // 使用一个文件保存所有通道数据
+                            string fullPath = Path.Combine(FolderPath, $"{timestamp}.txt");
+
+                            await using var fs = new FileStream(
                                 fullPath,
                                 FileMode.Create,
                                 FileAccess.Write,
-                                FileShare.ReadWrite,  // 修改这里
-                                4096,
+                                FileShare.ReadWrite,
+                                8192,
                                 FileOptions.Asynchronous
                             );
 
-                            // 使用using确保资源释放
-                            using var sw = new StreamWriter(fs);
+                            await using var sw = new StreamWriter(fs);
 
-                            var lines = data[channelId]
-                                .Select((t, j) => $"{j}-{Convert.ToDouble(t)}")
-                                .ToList();
+                            // 逐通道写入，减少内存使用
+                            for (int channelId = 0; channelId < _seriesCount; channelId++)
+                            {
+                                if (data[channelId] == null || data[channelId].Length == 0)
+                                    continue;
 
-                            sw.Write(string.Join(Environment.NewLine, lines));
+                                await sw.WriteLineAsync($"CH{channelId + 1}:");
+
+                                // 分批写入数据，避免一次性构建大字符串
+                                const int batchSize = 1000;
+                                for (int i = 0; i < data[channelId].Length; i += batchSize)
+                                {
+                                    var batch = new StringBuilder();
+                                    int end = Math.Min(i + batchSize, data[channelId].Length);
+
+                                    for (int j = i; j < end; j++)
+                                    {
+                                        batch.AppendLine($"{j}-{Math.Round(data[channelId][j], 5)}");
+                                    }
+
+                                    await sw.WriteAsync(batch.ToString());
+                                }
+
+                                await sw.WriteLineAsync(); // 通道间空行
+                            }
                         }
-                    });
+                        else
+                        {
+                            await Task.Delay(50);
+                        }
+                    }
                 }
-            }
-            catch (OperationCanceledException)
-            {
-                Debug.WriteLine("SaveData task was cancelled");
-            }
-            catch (Exception ex)
-            {
-                Debug.WriteLine($"保存数据时出错: {ex.Message}");
-            }
+                catch (Exception ex)
+                {
+                    Debug.WriteLine($"保存数据时出错: {ex.Message}");
+                }
+            });
         }
 
         #region 右键菜单
@@ -779,32 +915,60 @@ namespace CotrollerDemo.ViewModels
             if (canvas.Children[0] is LightningChart chart)
             {
                 chart.BeginUpdate();
-                string title = Sample.Title.Text.Split(":")[0];
 
                 ContextMenu menu = new();
 
-                if (Sample != null)
-                {
-                    if (title != "Series title" && title.Length > 4)
-                    {
-                        MenuItem deleteItem = new()
-                        {
-                            Header = "删除曲线",
-                            Command = DeleteSampleCommand,
-                            CommandParameter = Sample,
-                        };
-                        menu.Items.Add(deleteItem);
-                    }
+                var deleteItem = new MenuItem() { Header = "删除曲线" };
 
-                    menu.Items.Add(
-                        new MenuItem()
+                if (chart.ViewXY.SampleDataSeries.Count > 8)
+                {
+                    // 为每条曲线创建子菜单项
+                    for (int i = 0; i < chart.ViewXY.SampleDataSeries.Count - 8; i++)
+                    {
+                        int seriesIndex = i + 8;
+                        var series = chart.ViewXY.SampleDataSeries[seriesIndex];
+                        string seriesTitle = series.Title?.Text;
+
+                        var seriesItem = new MenuItem()
                         {
-                            Header = "修改标题",
-                            Command = new DelegateCommand<LightningChart>(UpdateTitle),
-                            CommandParameter = chart
-                        }
+                            Header = seriesTitle,
+                            Command = new DelegateCommand(() =>
+                            {
+                                DeleteSample(chart, seriesIndex);
+                            }),
+                        };
+
+                        deleteItem.Items.Add(seriesItem);
+                    }
+                }
+                else
+                {
+                    deleteItem.Items.Add(
+                        new MenuItem() { Header = "没有可用的曲线", IsEnabled = false }
                     );
                 }
+
+                var updateTitleItem = new MenuItem() { Header = "修改标题" };
+
+                // 为每条曲线创建子菜单项
+                foreach (
+                    var seriesItem in from series in chart.ViewXY.SampleDataSeries
+                                      let series1 = series
+                                      select new MenuItem()
+                                      {
+                                          Header = series.Title?.Text,
+                                          Command = new DelegateCommand(() =>
+                                          {
+                                              UpdateTitle(series1);
+                                          }),
+                                      }
+                )
+                {
+                    updateTitleItem.Items.Add(seriesItem);
+                }
+
+                menu.Items.Add(deleteItem);
+                menu.Items.Add(updateTitleItem);
 
                 if (chart.ViewXY.SampleDataSeries.Count > _seriesCount)
                 {
@@ -813,7 +977,7 @@ namespace CotrollerDemo.ViewModels
                         {
                             Header = "删除添加曲线",
                             Command = new DelegateCommand<LightningChart>(DeleteAllAddSeries),
-                            CommandParameter = chart
+                            CommandParameter = chart,
                         }
                     );
                 }
@@ -824,9 +988,10 @@ namespace CotrollerDemo.ViewModels
                         Header = "切换图例",
                         Command = new DelegateCommand(() =>
                         {
-                            chart.ViewXY.LegendBoxes[0].Visible = !chart.ViewXY.
-                                LegendBoxes[0].
-                                Visible;
+                            chart.ViewXY.LegendBoxes[0].Visible = !chart
+                                .ViewXY
+                                .LegendBoxes[0]
+                                .Visible;
                         }),
                     }
                 );
@@ -862,21 +1027,40 @@ namespace CotrollerDemo.ViewModels
                     }
                 );
 
-                if (Cursor != null)
+                var deleteMenuItem = new MenuItem() { Header = "删除光标" };
+
+                for (int i = 0; i < chart.ViewXY.LineSeriesCursors.Count; i++)
                 {
-                    menu.Items.Add(
-                        new MenuItem()
+                    int cursorIndex = i;
+                    var cursor = chart.ViewXY.LineSeriesCursors[i];
+
+                    // 为每个光标创建子菜单项
+                    var cursorItem = new MenuItem()
+                    {
+                        Header =
+                            $"{cursor.Tag} (X: {Math.Round(cursor.ValueAtXAxis, 2)})",
+                        Command = new DelegateCommand(() =>
                         {
-                            Header = "删除光标",
-                            Command = new DelegateCommand<LightningChart>(DeleteCursor),
-                            CommandParameter = chart
-                        }
+                            DeleteSeriesCursor(chart, cursorIndex);
+                        }),
+                    };
+
+                    deleteMenuItem.Items.Add(cursorItem);
+                }
+
+                // 如果没有光标，添加一个禁用的菜单项
+                if (chart.ViewXY.LineSeriesCursors.Count == 0)
+                {
+                    deleteMenuItem.Items.Add(
+                        new MenuItem() { Header = "没有可用的光标", IsEnabled = false }
                     );
                 }
 
+                menu.Items.Add(deleteMenuItem);
+
                 chart.ContextMenu = menu;
                 // 初始化图表事件处理
-                chart.MouseRightButtonDown += (s, e) => e.Handled = true;
+                chart.MouseRightButtonDown += (_, e) => e.Handled = true;
                 chart.EndUpdate();
             }
         }
@@ -884,23 +1068,60 @@ namespace CotrollerDemo.ViewModels
         /// <summary>
         /// 删除曲线
         /// </summary>
-        /// <param name="sample"></param>
-        private void DeleteSample(SampleDataSeries sample)
+        /// <param name="chart"></param>
+        /// <param name="seriesIndex"></param>
+        private void DeleteSample(LightningChart chart, int seriesIndex)
         {
-            var chart = sample.OwnerView.OwnerChart;
+            if (
+                chart == null
+                || seriesIndex < 0
+                || seriesIndex >= chart.ViewXY.SampleDataSeries.Count
+            )
+                return;
 
-            var title = sample.Title.Text.Split(':')[0];
+            chart.BeginUpdate();
 
-            chart.ViewXY.SampleDataSeries.Remove(sample);
-            if (title.Contains('_'))
+            // 获取需要删除的曲线
+            var series = chart.ViewXY.SampleDataSeries[seriesIndex];
+
+            // 删除与该曲线相关的所有注释 每个光标都有一组注释(X轴注释+每条曲线的注释)
+            for (
+                int cursorIndex = 0;
+                cursorIndex < chart.ViewXY.LineSeriesCursors.Count;
+                cursorIndex++
+            )
             {
-                if (chart.ViewXY.Annotations.Any(t => t.Text.Contains(title)))
+                // 计算当前光标的注释起始索引
+                int annotationBaseIndex = cursorIndex * (chart.ViewXY.SampleDataSeries.Count + 1);
+
+                // 计算该曲线对应注释的索引
+                // +1是因为首个注释是X轴注释
+                int annotationIndex = annotationBaseIndex + seriesIndex + 1;
+
+                // 确保索引在有效范围内
+                if (annotationIndex < chart.ViewXY.Annotations.Count)
                 {
-                    chart.ViewXY.Annotations.RemoveAll(t => t.Text.Contains(title));
+                    // 获取要删除的注释
+                    var annotation = chart.ViewXY.Annotations[annotationIndex];
+
+                    // 从集合中移除注释
+                    chart.ViewXY.Annotations.RemoveAt(annotationIndex);
+
+                    // 释放注释资源
+                    annotation.Dispose();
                 }
             }
+
+            // 从集合中移除曲线
+            chart.ViewXY.SampleDataSeries.RemoveAt(seriesIndex);
+
+            // 释放曲线资源
+            series.Dispose();
+
+            // 更新相关注释
             UpdateCursorResult(chart);
-            Sample = new SampleDataSeries();
+
+            chart.EndUpdate();
         }
 
         /// <summary>
@@ -918,9 +1139,13 @@ namespace CotrollerDemo.ViewModels
             };
             cursor.LineStyle.Color = Color.FromArgb(150, 255, 0, 0);
             cursor.TrackPoint.Color1 = Colors.White;
+            cursor.TrackPoint.Shape = Shape.Circle;
+            cursor.Tag = $"光标{chart.ViewXY.LineSeriesCursors.Count + 1}";
             cursor.PositionChanged += Cursor_PositionChanged;
-            cursor.MouseOverOn += Cursor_MouseOverOn;
             chart.ViewXY.LineSeriesCursors.Add(cursor);
+
+            CursorlDict.Add(cursor.Tag, cursor.ValueAtXAxis);
+            TempCursorlDict = CursorlDict;
 
             // 创建注释
             for (int i = 0; i < chart.ViewXY.SampleDataSeries.Count + 1; i++)
@@ -931,11 +1156,6 @@ namespace CotrollerDemo.ViewModels
             chart.EndUpdate();
             // 直接更新光标结果，不使用异步调用
             UpdateCursorResult(chart);
-        }
-
-        private void Cursor_MouseOverOn(object sender, System.Windows.Input.MouseEventArgs e)
-        {
-            Cursor = sender as LineSeriesCursor;
         }
 
         /// <summary>
@@ -959,6 +1179,7 @@ namespace CotrollerDemo.ViewModels
             // 将背景色修改为透明
             annot.Fill.Color = Colors.Transparent;
             annot.Fill.GradientFill = GradientFill.Solid;
+            annot.Fill.Bitmap.ImageTintColor = Colors.Transparent;
             annot.Fill.GradientColor = Colors.Transparent;
             annot.ArrowLineStyle.Color = Colors.Transparent;
             annot.ArrowLineStyle.Width = 0;
@@ -989,8 +1210,8 @@ namespace CotrollerDemo.ViewModels
         /// <summary>
         /// 修改曲线标题
         /// </summary>
-        /// <param name="chart"></param>
-        public void UpdateTitle(LightningChart chart)
+        /// <param name="sample"></param>
+        public void UpdateTitle(SampleDataSeries sample)
         {
             var textEdit = new TextEdit()
             {
@@ -1025,13 +1246,10 @@ namespace CotrollerDemo.ViewModels
 
             if (dialog.ShowDialog() == true)
             {
-                if (
-                    textEdit.EditValue != null
-                    && (string)textEdit.EditValue != string.Empty
-                )
+                if (textEdit.EditValue != null && (string)textEdit.EditValue != string.Empty)
                 {
-                    Sample.Title.Text = textEdit.Text;
-                    UpdateCursorResult(chart);
+                    sample.Title.Text = textEdit.Text;
+                    UpdateCursorResult(sample.OwnerView.OwnerChart);
                 }
             }
         }
@@ -1039,46 +1257,142 @@ namespace CotrollerDemo.ViewModels
         /// <summary>
         /// 删除图表中所有添加的曲线
         /// </summary>
-        /// <param name="chart"></param>
+        /// <param name="chart">要操作的图表</param>
         public void DeleteAllAddSeries(LightningChart chart)
         {
-            chart.BeginUpdate();
+            if (chart == null)
+                return;
 
-            chart.ViewXY.Annotations.RemoveAll(anno =>
-                anno.Text != null
-                && anno.Text.Split([':'], 2)[0].Length > 5
-                && anno.Text != "Annotation"
-            );
-
-            chart.ViewXY.SampleDataSeries.RemoveAll(t =>
-                t.Title.Text.Split([':'], 2)[0].Length > 5
-            );
-
-            chart.EndUpdate();
-
-            UpdateCursorResult(chart);
+            try
+            {
+                // 阻止正在进行的渲染
+                chart.BeginUpdate();
+                
+                // 存储需要删除的注释
+                var annotationsToRemove = new List<AnnotationXY>();
+                
+                // 收集需要删除的序列
+                var seriesToRemove = new List<SampleDataSeries>();
+                var seriesIndices = new List<int>();
+                
+                // 只收集索引 8 及之后的曲线（添加的曲线）
+                for (int i = 8; i < chart.ViewXY.SampleDataSeries.Count; i++)
+                {
+                    seriesToRemove.Add(chart.ViewXY.SampleDataSeries[i]);
+                    seriesIndices.Add(i);
+                }
+                
+                // 如果没有需要删除的曲线，直接返回
+                if (seriesToRemove.Count == 0)
+                {
+                    chart.EndUpdate();
+                    return;
+                }
+                
+                // 处理光标相关的注释
+                // 每个光标有 (系列数+1) 个注释，第一个是X轴注释，其余是每个系列的注释
+                for (int cursorIndex = 0; cursorIndex < chart.ViewXY.LineSeriesCursors.Count; cursorIndex++)
+                {
+                    // 计算当前光标注释的基础索引
+                    int annotationBase = cursorIndex * (chart.ViewXY.SampleDataSeries.Count + 1);
+                    
+                    // 计算需要删除注释的索引
+                    foreach (int seriesIndex in seriesIndices)
+                    {
+                        // 计算注释索引：基础索引 + 1(X轴注释) + 系列索引
+                        int annotationIndex = annotationBase + 1 + seriesIndex;
+                        
+                        // 确保索引有效
+                        if (annotationIndex < chart.ViewXY.Annotations.Count)
+                        {
+                            annotationsToRemove.Add(chart.ViewXY.Annotations[annotationIndex]);
+                        }
+                    }
+                }
+                
+                // 安全地移除注释
+                foreach (var annotation in annotationsToRemove)
+                {
+                    chart.ViewXY.Annotations.Remove(annotation);
+                    annotation.Dispose();
+                }
+                
+                // 分别进行曲线删除和资源释放
+                foreach (var series in seriesToRemove)
+                {
+                    // 先从集合中移除
+                    chart.ViewXY.SampleDataSeries.Remove(series);
+                    // 然后安全地释放资源
+                    series.Dispose();
+                }
+                
+                // 更新图表
+                chart.EndUpdate();
+                
+                // 更新光标结果
+                DXMessageBox.Show("已删除所有添加的曲线", "提示", MessageBoxButton.OK, MessageBoxImage.Information);
+                
+                // 主线程中更新光标结果，避免UI冻结
+                Application.Current.Dispatcher.InvokeAsync(() => 
+                {
+                    UpdateCursorResult(chart);
+                }, DispatcherPriority.Background);
+            }
+            catch (Exception ex)
+            {
+                chart.EndUpdate();
+                Debug.WriteLine($"删除曲线时出错: {ex.Message}");
+                DXMessageBox.Show($"删除曲线时发生错误: {ex.Message}", "错误", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
         }
 
         /// <summary>
         /// 删除选中的光标
         /// </summary>
         /// <param name="chart"></param>
-        public void DeleteCursor(LightningChart chart)
+        /// <param name="cursorIndex"></param>
+        private void DeleteSeriesCursor(LightningChart chart, int cursorIndex)
         {
+            if (
+                chart == null
+                || cursorIndex < 0
+                || cursorIndex >= chart.ViewXY.LineSeriesCursors.Count
+            )
+                return;
+
             chart.BeginUpdate();
-            int cursorIndex = chart.ViewXY.LineSeriesCursors.IndexOf(Cursor);
-            int annoIndex =
-                chart.ViewXY.LineSeriesCursors.Count <= 1 || cursorIndex == 0
-                    ? 0
-                    : chart.ViewXY.SampleDataSeries.Count * cursorIndex;
-            chart.ViewXY.Annotations.RemoveRange(
-                annoIndex,
-                chart.ViewXY.SampleDataSeries.Count + 1
-            );
-            chart.ViewXY.LineSeriesCursors.Remove(Cursor);
-            Cursor = null;
+
+            // 获取需要删除的光标
+            var cursor = chart.ViewXY.LineSeriesCursors[cursorIndex];
+
+            // 删除该光标对应的注释（如果有）
+            var series = chart.ViewXY.SampleDataSeries;
+            int annotationStartIndex = cursorIndex * (series.Count + 1);
+
+            // 删除与此光标关联的所有注释（X轴注释和每个系列注释）
+            int annotationsToRemove = series.Count + 1;
+            for (int i = 0; i < annotationsToRemove; i++)
+            {
+                // 确保我们不会越界
+                if (annotationStartIndex < chart.ViewXY.Annotations.Count)
+                {
+                    chart.ViewXY.Annotations.RemoveAt(annotationStartIndex);
+                }
+            }
+
+            // 断开光标事件连接
+            cursor.PositionChanged -= Cursor_PositionChanged;
+
+            // 从集合中移除光标
+            chart.ViewXY.LineSeriesCursors.Remove(cursor);
+
+            // 释放光标资源
+            cursor.Dispose();
 
             chart.EndUpdate();
+
+            // 更新其他光标的显示结果
+            UpdateCursorResult(chart);
         }
 
         #endregion 右键菜单
@@ -1096,24 +1410,37 @@ namespace CotrollerDemo.ViewModels
                     Directory.CreateDirectory(FolderPath);
                 }
 
-                // 使用EnumerateFiles代替GetFiles，这样文件可以在被发现时立即处理 而不需要等待整个列表构建完成
+                // 使用分页加载的方式获取文件，避免一次性加载所有文件
                 Task.Run(async () =>
-                 {
-                     List<string> fileNames = [.. Directory.EnumerateFiles(FolderPath, "*.txt", SearchOption.TopDirectoryOnly).Select(Path.GetFileName)];
+                {
+                    // 限制文件数量，只加载最新的1000个文件
+                    const int maxFileCount = 1000;
 
-                     await Application.Current.Dispatcher.InvokeAsync(() =>
-                       {
-                           if (fileNames.Count > 0)
-                           {
-                               var list = fileNames.Where(f => !FileNames.Contains(f)).ToList();
-                               FileNames.AddRange(list);
-                           }
-                           else
-                           {
-                               FileNames = [];
-                           }
-                       });
-                 });
+                    // 获取所有文件并按修改时间排序，只取最新的maxFileCount个
+                    var fileInfos = new DirectoryInfo(FolderPath)
+                        .GetFiles("*.txt")
+                        .OrderByDescending(f => f.LastWriteTime)
+                        .Take(maxFileCount)
+                        .Select(f => f.Name)
+                        .ToList();
+
+                    await Application.Current.Dispatcher.InvokeAsync(() =>
+                    {
+                        // 清空现有集合，使用新集合替代
+                        FileNames.Clear();
+
+                        if (fileInfos.Count > 0)
+                        {
+                            foreach (var file in fileInfos)
+                            {
+                                FileNames.Add(file);
+                            }
+                        }
+
+                        // 执行垃圾回收，释放内存
+                        GC.Collect();
+                    });
+                });
             }
             catch (Exception ex)
             {
@@ -1127,14 +1454,15 @@ namespace CotrollerDemo.ViewModels
         private async Task StartTest()
         {
             // 先清理资源，确保干净的起点
-            CleanupResources();
+            //CleanupResources();
 
             await GlobalValues.TcpClient.SendDataClient(1);
 
             IsRunning = true; // 更新运行状态
 
             // 启动数据保存任务
-            //SaveData();
+
+            SaveData();
 
             // 添加渲染事件处理
             CompositionTarget.Rendering += CompositionTarget_Rendering;
@@ -1181,14 +1509,37 @@ namespace CotrollerDemo.ViewModels
             //取消正在进行的呈现，因为下面的代码更新了图表。
             e.CancelRendering = true;
 
-            var chart = e.Cursor.OwnerView.OwnerChart;
+            if (sender is LineSeriesCursor cursor)
+            {
+                var chart = cursor.OwnerView.OwnerChart;
 
-            Task.Run(async () =>
-              await Application.Current.Dispatcher.InvokeAsync(() =>
-              {
-                  UpdateCursorResult(chart);
-              }, DispatcherPriority.Background)
-            );
+                if (cursor.ValueAtXAxis < chart.ViewXY.XAxes[0].Minimum)
+                {
+                    cursor.ValueAtXAxis = chart.ViewXY.XAxes[0].Minimum;
+                }
+
+                if (cursor.ValueAtXAxis > chart.ViewXY.XAxes[0].Maximum)
+                {
+                    cursor.ValueAtXAxis = chart.ViewXY.XAxes[0].Maximum;
+                }
+
+                var cur = TempCursorlDict.First(tuple => tuple.Key == cursor.Tag);
+                if (!cursor.ValueAtXAxis.Equals(cur.Value))
+                {
+                    TempCursorlDict[cursor.Tag] = cursor.ValueAtXAxis;
+                }
+
+                Task.Run(
+                    async () =>
+                        await Application.Current.Dispatcher.InvokeAsync(
+                            () =>
+                            {
+                                UpdateCursorResult(chart);
+                            },
+                            DispatcherPriority.Background
+                        )
+                );
+            }
         }
 
         /// <summary>
@@ -1198,12 +1549,16 @@ namespace CotrollerDemo.ViewModels
         /// <param name="xValue"></param>
         /// <param name="yValue"></param>
         /// <returns></returns>
-        private static bool SolveValueAccurate(SampleDataSeries series, double xValue, out double yValue)
+        private static bool SolveValueAccurate(
+            SampleDataSeries series,
+            double xValue,
+            out double yValue
+        )
         {
             yValue = 0;
 
             var result = series.SolveYValueAtXValue(xValue);
-            string text = series.Title.Text;
+
             if (result.SolveStatus == LineSeriesSolveStatus.OK)
             {
                 yValue = (result.YMax + result.YMin) / 2.0;
@@ -1245,12 +1600,11 @@ namespace CotrollerDemo.ViewModels
             while (list.Count > 0)
             {
                 int lastInd = list.Count - 1;
-                // ReSharper disable once SuggestVarOrType_SimpleTypes
-                T item = list[lastInd]; // take item ref from list.
+                var item = list[lastInd]; // take item ref from list.
                 list.RemoveAt(lastInd); // remove item first
                 if (item != null)
                 {
-                    (item as IDisposable).Dispose(); // then dispose it.
+                    item.Dispose(); // then dispose it.
                 }
             }
         }
@@ -1294,7 +1648,7 @@ namespace CotrollerDemo.ViewModels
         /// <summary>
         /// 清空文件夹
         /// </summary>
-        private async void ClearFolder()
+        private void ClearFolder()
         {
             try
             {
@@ -1303,8 +1657,18 @@ namespace CotrollerDemo.ViewModels
                     // 删除文件夹中所有的文件
                     FileOperation.Delete(FolderPath);
 
-                    // 刷新文件列表
-                    GetFolderFiles();
+                    // 清空文件名集合
+                    Application.Current.Dispatcher.Invoke(() =>
+                    {
+                        FileNames.Clear();
+
+                        // 强制垃圾回收
+                        GC.Collect();
+                        GC.WaitForPendingFinalizers();
+                        GC.Collect();
+                    });
+
+                    DXMessageBox.Show("文件夹已清空");
                 }
             }
             catch (Exception ex)
@@ -1381,7 +1745,7 @@ namespace CotrollerDemo.ViewModels
                     for (int i = 0; i < _seriesCount; i++)
                     {
                         var series = chart.ViewXY.SampleDataSeries[i];
-                        if (_dataBuffer.TryGetValue(i, out var buffer) && buffer.Count >= 1024)
+                        if (DataBuffer.TryGetValue(i, out var buffer) && buffer.Count >= 1024)
                         {
                             var data = buffer.Take(1024).ToArray();
                             series.SamplesSingle = data;
@@ -1408,13 +1772,16 @@ namespace CotrollerDemo.ViewModels
                     layPanel.Closed = true;
                 });
 
-                layPanel.ContextMenuCustomizations.AddRange(_layoutGroup.Items[0].ContextMenuCustomizations);
+                layPanel.ContextMenuCustomizations.AddRange(Res);
                 layPanel.AllowDrop = true;
-                layPanel.Drop += (o, e) =>
+                layPanel.Drop += (_, e) =>
                 {
                     if (e.Data.GetDataPresent(System.Windows.DataFormats.StringFormat))
                     {
-                        if (e.Data.GetData(System.Windows.DataFormats.StringFormat) is string fileData)
+                        if (
+                            e.Data.GetData(System.Windows.DataFormats.StringFormat)
+                            is string fileData
+                        )
                         {
                             string filePath = Path.Combine("D:\\Datas", fileData);
 
@@ -1443,12 +1810,16 @@ namespace CotrollerDemo.ViewModels
                                     Title = new SeriesTitle() { Text = fileData },
                                     LineStyle =
                                     {
-                                        Color = ChartTools.CalcGradient(GenerateUniqueColor(),Colors.White,50)
+                                        Color = ChartTools.CalcGradient(
+                                            GenerateUniqueColor(),
+                                            Colors.White,
+                                            50
+                                        ),
                                     },
                                     SampleFormat = SampleFormat.SingleFloat,
                                 };
 
-                                series.MouseOverOn += (sender, args) =>
+                                series.MouseOverOn += (_, _) =>
                                 {
                                     Sample = series;
                                 };
@@ -1470,7 +1841,7 @@ namespace CotrollerDemo.ViewModels
                     }
                 };
 
-                canvas.PreviewMouseDown += (o, e) =>
+                canvas.PreviewMouseDown += (_, e) =>
                 {
                     var hitTest = VisualTreeHelper.HitTest(canvas, e.GetPosition(canvas));
 
@@ -1479,12 +1850,12 @@ namespace CotrollerDemo.ViewModels
                         _text.ClearFocus();
                     }
                 };
-                canvas.SizeChanged += (o, e) =>
+                canvas.SizeChanged += (_, _) =>
                 {
                     chart.Width = canvas.ActualWidth;
                     chart.Height = canvas.ActualHeight;
                 };
-                canvas.PreviewMouseRightButtonDown += (o, e) =>
+                canvas.PreviewMouseRightButtonDown += (_, _) =>
                 {
                     ShowMenu(canvas);
                 };
@@ -1495,8 +1866,83 @@ namespace CotrollerDemo.ViewModels
             }
         }
 
+        private void InitializeFileWatcher()
+        {
+            // 关闭之前的监视器
+            _fileWatcher?.Dispose();
 
+            _fileWatcher = new FileSystemWatcher(FolderPath)
+            {
+                Filter = "*.txt",
+                EnableRaisingEvents = true,
+                IncludeSubdirectories = false
+            };
+
+            // 只有在新文件创建时才添加到列表
+            _fileWatcher.Created += (_, e) =>
+            {
+                Application.Current.Dispatcher.Invoke(() =>
+                {
+                    if (FileNames.Count >= 1000)
+                    {
+                        FileNames.RemoveAt(FileNames.Count - 1); // 移除最旧的一项
+                    }
+                    FileNames.Insert(0, Path.GetFileName(e.FullPath)); // 添加到最前面
+                });
+            };
+
+            // 文件删除时从列表移除
+            _fileWatcher.Deleted += (_, e) =>
+            {
+                Application.Current.Dispatcher.Invoke(() =>
+                {
+                    var fileName = Path.GetFileName(e.FullPath);
+                    if (FileNames.Contains(fileName))
+                    {
+                        FileNames.Remove(fileName);
+                    }
+                });
+            };
+        }
 
         #endregion Main
+
+        public void Dispose()
+        {
+            // 取消所有任务
+            Source.Cancel();
+            Source.Dispose();
+
+            // 清理通道缓冲区
+            lock (_updateLock)
+            {
+                foreach (var buffer in _channelBuffers.Values)
+                {
+                    buffer.Clear();
+                }
+                _channelBuffers.Clear();
+            }
+
+            // 清空文件名集合
+            FileNames.Clear();
+
+            // 清空通道数据
+            while (FileData.TryDequeue(out _)) { }
+
+            // 释放图表资源
+            foreach (var chart in Charts)
+            {
+                chart.Dispose();
+            }
+            Charts.Clear();
+
+            // 释放文件监视器
+            _fileWatcher?.Dispose();
+
+            // 强制垃圾回收
+            GC.Collect();
+            GC.WaitForPendingFinalizers();
+            GC.Collect();
+        }
     }
 }

@@ -5,6 +5,8 @@ using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Media.Animation;
+using System.Runtime.InteropServices;
+using System.Threading;
 
 namespace CotrollerDemo.Views
 {
@@ -29,6 +31,171 @@ namespace CotrollerDemo.Views
 
         private Point? dragStart;
         private Canvas ParentCanvas => Parent as Canvas;
+
+        #region 剪贴板Win32API
+
+        [DllImport("user32.dll")]
+        private static extern bool OpenClipboard(IntPtr hWndNewOwner);
+
+        [DllImport("user32.dll")]
+        private static extern bool CloseClipboard();
+
+        [DllImport("user32.dll")]
+        private static extern bool EmptyClipboard();
+
+        [DllImport("user32.dll")]
+        private static extern IntPtr SetClipboardData(uint uFormat, IntPtr hMem);
+
+        [DllImport("kernel32.dll")]
+        private static extern IntPtr GlobalAlloc(uint uFlags, UIntPtr dwBytes);
+
+        [DllImport("kernel32.dll")]
+        private static extern IntPtr GlobalLock(IntPtr hMem);
+
+        [DllImport("kernel32.dll")]
+        private static extern bool GlobalUnlock(IntPtr hMem);
+
+        [DllImport("kernel32.dll")]
+        private static extern IntPtr GlobalSize(IntPtr hMem);
+
+        [DllImport("kernel32.dll")]
+        private static extern IntPtr GlobalFree(IntPtr hMem);
+
+        [DllImport("user32.dll")]
+        private static extern IntPtr GetClipboardData(uint uFormat);
+
+        [DllImport("user32.dll")]
+        private static extern IntPtr GetClipboardOwner();
+
+        private const uint GMEM_MOVEABLE = 0x0002;
+        private const uint GMEM_ZEROINIT = 0x0040;
+        private const uint CF_UNICODETEXT = 13;
+
+        // 安全地设置剪贴板文本
+        private bool SafeSetClipboardText(string text)
+        {
+            const int maxRetries = 5;
+            const int retryDelayMs = 100;
+            
+            for (int i = 0; i < maxRetries; i++)
+            {
+                if (SetClipboardTextNative(text))
+                    return true;
+                
+                Thread.Sleep(retryDelayMs);
+            }
+            
+            return false;
+        }
+
+        private bool SetClipboardTextNative(string text)
+        {
+            if (string.IsNullOrEmpty(text))
+                return false;
+            
+            IntPtr hGlobal = IntPtr.Zero;
+            
+            try
+            {
+                // 获取字符串的字节长度（包括结束符）
+                var bytes = (text.Length + 1) * 2;
+                hGlobal = GlobalAlloc(GMEM_MOVEABLE | GMEM_ZEROINIT, (UIntPtr)bytes);
+                
+                if (hGlobal == IntPtr.Zero)
+                    return false;
+                
+                IntPtr lpGlobal = GlobalLock(hGlobal);
+                
+                if (lpGlobal == IntPtr.Zero)
+                    return false;
+                
+                try
+                {
+                    // 复制文本到全局内存
+                    Marshal.Copy(text.ToCharArray(), 0, lpGlobal, text.Length);
+                }
+                finally
+                {
+                    GlobalUnlock(hGlobal);
+                }
+                
+                // 打开剪贴板并设置数据
+                if (!OpenClipboard(IntPtr.Zero))
+                    return false;
+                
+                try
+                {
+                    EmptyClipboard();
+                    IntPtr result = SetClipboardData(CF_UNICODETEXT, hGlobal);
+                    return (result != IntPtr.Zero);
+                }
+                finally
+                {
+                    CloseClipboard();
+                }
+            }
+            catch
+            {
+                if (hGlobal != IntPtr.Zero)
+                    GlobalFree(hGlobal);
+                
+                return false;
+            }
+        }
+
+        // 获取剪贴板文本
+        private string SafeGetClipboardText()
+        {
+            const int maxRetries = 5;
+            const int retryDelayMs = 100;
+            
+            for (int i = 0; i < maxRetries; i++)
+            {
+                string text = GetClipboardTextNative();
+                if (text != null)
+                    return text;
+                
+                Thread.Sleep(retryDelayMs);
+            }
+            
+            return null;
+        }
+
+        private string GetClipboardTextNative()
+        {
+            if (!OpenClipboard(IntPtr.Zero))
+                return null;
+            
+            try
+            {
+                IntPtr hClipboardData = GetClipboardData(CF_UNICODETEXT);
+                if (hClipboardData == IntPtr.Zero)
+                    return null;
+                
+                IntPtr lpText = GlobalLock(hClipboardData);
+                if (lpText == IntPtr.Zero)
+                    return null;
+                
+                try
+                {
+                    return Marshal.PtrToStringUni(lpText);
+                }
+                finally
+                {
+                    GlobalUnlock(hClipboardData);
+                }
+            }
+            catch
+            {
+                return null;
+            }
+            finally
+            {
+                CloseClipboard();
+            }
+        }
+
+        #endregion
 
         public ResizableTextBox()
         {
@@ -231,33 +398,74 @@ namespace CotrollerDemo.Views
         {
             if (!string.IsNullOrEmpty(textBox.SelectedText))
             {
-                Clipboard.SetText(textBox.SelectedText);
-                textBox.SelectedText = "";  // 只删除选中部分
-                Text = textBox.Text;
-                UpdateTextDisplay();
+                string selectedText = textBox.SelectedText;
+                
+                // 使用原生API设置剪贴板文本
+                if (SafeSetClipboardText(selectedText))
+                {
+                    // 成功后清除选择的文本
+                    textBox.SelectedText = "";
+                    Text = textBox.Text;
+                    UpdateTextDisplay();
+                }
+                else
+                {
+                    // 备选方案：使用SendKeys模拟剪切操作
+                    try 
+                    {
+                        System.Windows.Forms.SendKeys.SendWait("^X");
+                    }
+                    catch
+                    {
+                        MessageBox.Show("剪切操作失败，请手动使用Ctrl+X", "提示");
+                    }
+                }
             }
         }
 
         private void Copy_Click(object sender, RoutedEventArgs e)
         {
-            Clipboard.SetText(textBox.SelectedText);
+            if (!string.IsNullOrEmpty(textBox.SelectedText))
+            {
+                string selectedText = textBox.SelectedText;
+                
+                // 使用原生API设置剪贴板文本
+                if (!SafeSetClipboardText(selectedText))
+                {
+                    // 备选方案：使用SendKeys模拟复制操作
+                    try 
+                    {
+                        System.Windows.Forms.SendKeys.SendWait("^C");
+                    }
+                    catch
+                    {
+                        MessageBox.Show("复制操作失败，请手动使用Ctrl+C", "提示");
+                    }
+                }
+            }
         }
 
         private void Paste_Click(object sender, RoutedEventArgs e)
         {
-            if (Clipboard.ContainsText())
+            // 首先使用Win32 API获取剪贴板文本
+            string clipboardText = SafeGetClipboardText();
+            
+            if (!string.IsNullOrEmpty(clipboardText))
             {
-                Text = Clipboard.GetText();
-                if (textBox.SelectedText != textBox.Text)
+                // 文本获取成功，插入到文本框
+                if (textBox.SelectionLength > 0)
                 {
-                    //textBox.Text += Text;
-                    textBox.SelectedText = Text;
+                    textBox.SelectedText = clipboardText;
                 }
                 else
                 {
-                    textBox.Text = Text;
-                    textBlock.Text = Text;
+                    int caretIndex = textBox.CaretIndex;
+                    textBox.Text = textBox.Text.Insert(caretIndex, clipboardText);
+                    textBox.CaretIndex = caretIndex + clipboardText.Length;
                 }
+                
+                Text = textBox.Text;
+                UpdateTextDisplay();
             }
         }
 
@@ -285,11 +493,11 @@ namespace CotrollerDemo.Views
             if (ParentCanvas != null)
             {
                 var maxZ = ParentCanvas.Children.OfType<UIElement>()
-                    .Select(Canvas.GetZIndex)
+                    .Select(Panel.GetZIndex)
                     .DefaultIfEmpty(0)
                     .Max();
 
-                Canvas.SetZIndex(this, maxZ + 1);
+                Panel.SetZIndex(this, maxZ + 1);
             }
         }
 
