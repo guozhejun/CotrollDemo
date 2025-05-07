@@ -1,12 +1,12 @@
 ﻿using System;
 using System.Linq;
+using System.Runtime.InteropServices;
+using System.Threading;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Media.Animation;
-using System.Runtime.InteropServices;
-using System.Threading;
 
 namespace CotrollerDemo.Views
 {
@@ -76,15 +76,15 @@ namespace CotrollerDemo.Views
         {
             const int maxRetries = 5;
             const int retryDelayMs = 100;
-            
+
             for (int i = 0; i < maxRetries; i++)
             {
                 if (SetClipboardTextNative(text))
                     return true;
-                
+
                 Thread.Sleep(retryDelayMs);
             }
-            
+
             return false;
         }
 
@@ -92,23 +92,23 @@ namespace CotrollerDemo.Views
         {
             if (string.IsNullOrEmpty(text))
                 return false;
-            
+
             IntPtr hGlobal = IntPtr.Zero;
-            
+
             try
             {
                 // 获取字符串的字节长度（包括结束符）
                 var bytes = (text.Length + 1) * 2;
                 hGlobal = GlobalAlloc(GMEM_MOVEABLE | GMEM_ZEROINIT, (UIntPtr)bytes);
-                
+
                 if (hGlobal == IntPtr.Zero)
                     return false;
-                
+
                 IntPtr lpGlobal = GlobalLock(hGlobal);
-                
+
                 if (lpGlobal == IntPtr.Zero)
                     return false;
-                
+
                 try
                 {
                     // 复制文本到全局内存
@@ -118,11 +118,11 @@ namespace CotrollerDemo.Views
                 {
                     GlobalUnlock(hGlobal);
                 }
-                
+
                 // 打开剪贴板并设置数据
                 if (!OpenClipboard(IntPtr.Zero))
                     return false;
-                
+
                 try
                 {
                     EmptyClipboard();
@@ -138,7 +138,7 @@ namespace CotrollerDemo.Views
             {
                 if (hGlobal != IntPtr.Zero)
                     GlobalFree(hGlobal);
-                
+
                 return false;
             }
         }
@@ -148,16 +148,16 @@ namespace CotrollerDemo.Views
         {
             const int maxRetries = 5;
             const int retryDelayMs = 100;
-            
+
             for (int i = 0; i < maxRetries; i++)
             {
                 string text = GetClipboardTextNative();
                 if (text != null)
                     return text;
-                
+
                 Thread.Sleep(retryDelayMs);
             }
-            
+
             return null;
         }
 
@@ -165,17 +165,17 @@ namespace CotrollerDemo.Views
         {
             if (!OpenClipboard(IntPtr.Zero))
                 return null;
-            
+
             try
             {
                 IntPtr hClipboardData = GetClipboardData(CF_UNICODETEXT);
                 if (hClipboardData == IntPtr.Zero)
                     return null;
-                
+
                 IntPtr lpText = GlobalLock(hClipboardData);
                 if (lpText == IntPtr.Zero)
                     return null;
-                
+
                 try
                 {
                     return Marshal.PtrToStringUni(lpText);
@@ -195,7 +195,7 @@ namespace CotrollerDemo.Views
             }
         }
 
-        #endregion
+        #endregion 剪贴板Win32API
 
         public ResizableTextBox()
         {
@@ -399,7 +399,7 @@ namespace CotrollerDemo.Views
             if (!string.IsNullOrEmpty(textBox.SelectedText))
             {
                 string selectedText = textBox.SelectedText;
-                
+
                 // 使用原生API设置剪贴板文本
                 if (SafeSetClipboardText(selectedText))
                 {
@@ -411,7 +411,7 @@ namespace CotrollerDemo.Views
                 else
                 {
                     // 备选方案：使用SendKeys模拟剪切操作
-                    try 
+                    try
                     {
                         System.Windows.Forms.SendKeys.SendWait("^X");
                     }
@@ -428,12 +428,12 @@ namespace CotrollerDemo.Views
             if (!string.IsNullOrEmpty(textBox.SelectedText))
             {
                 string selectedText = textBox.SelectedText;
-                
+
                 // 使用原生API设置剪贴板文本
                 if (!SafeSetClipboardText(selectedText))
                 {
                     // 备选方案：使用SendKeys模拟复制操作
-                    try 
+                    try
                     {
                         System.Windows.Forms.SendKeys.SendWait("^C");
                     }
@@ -449,7 +449,7 @@ namespace CotrollerDemo.Views
         {
             // 首先使用Win32 API获取剪贴板文本
             string clipboardText = SafeGetClipboardText();
-            
+
             if (!string.IsNullOrEmpty(clipboardText))
             {
                 // 文本获取成功，插入到文本框
@@ -463,7 +463,7 @@ namespace CotrollerDemo.Views
                     textBox.Text = textBox.Text.Insert(caretIndex, clipboardText);
                     textBox.CaretIndex = caretIndex + clipboardText.Length;
                 }
-                
+
                 Text = textBox.Text;
                 UpdateTextDisplay();
             }

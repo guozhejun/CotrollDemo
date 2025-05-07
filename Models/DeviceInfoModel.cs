@@ -1,9 +1,9 @@
-﻿using System.Net;
-using Prism.Mvvm;
+﻿using Prism.Mvvm;
+using System.Net;
 
 namespace CotrollerDemo.Models
 {
-    public class DeviceInfoModel: BindableBase
+    public class DeviceInfoModel : BindableBase
     {
         /// <summary>
         /// Ip地址
@@ -16,7 +16,6 @@ namespace CotrollerDemo.Models
             get => _iPAddress;
             set => SetProperty(ref _iPAddress, value);
         }
-
 
         /// <summary>
         /// 设备序列号

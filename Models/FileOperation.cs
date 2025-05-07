@@ -7,7 +7,7 @@ namespace CotrollerDemo.Models
     {
         [DllImport("kernel32.dll", SetLastError = true)]
         [return: MarshalAs(UnmanagedType.Bool)]
-        private static extern bool DeleteFile(string lpFileName);
+        public static extern bool DeleteFile(string lpFileName);
 
         public static void Delete(this string directory)
         {

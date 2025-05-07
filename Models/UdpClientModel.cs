@@ -1,8 +1,10 @@
 ﻿using System;
+using System.Diagnostics;
 using System.Linq;
 using System.Net;
 using System.Net.NetworkInformation;
 using System.Net.Sockets;
+using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
 
@@ -30,12 +32,24 @@ namespace CotrollerDemo.Models
         public byte[] DeviceSerialNumByte = new byte[16]; // 序列号字节数组
         public string[] DeviceSerialNum = []; // 序列号
 
+        // 添加接收超时设置
+        private const int ReceiveTimeoutMs = 3000; // 3秒接收超时
+        
+        // 添加最大重试次数
+        private const int MaxRetryCount = 3; // 最大重试次数
+        
+        // 添加重试间隔
+        private const int RetryDelayMs = 1000; // 重试间隔时间(毫秒)
+
+        // 添加锁对象确保线程安全
+        private readonly object _udpLock = new object();
+
         public UdpClientModel()
         {
             ServerIp = GlobalValues.GetIpAdders();
-            int serverPort = 8080;
-            UdpServer = new(serverPort);
-            //ReceiveData();
+            const int serverPort = 8080;
+            UdpServer = new UdpClient(serverPort);
+            //UdpServer.Client.ReceiveTimeout = ReceiveTimeoutMs; // 设置接收超时
         }
 
         /// <summary>
@@ -44,7 +58,6 @@ namespace CotrollerDemo.Models
         /// <returns></returns>
         public void StartUdpListen()
         {
-            //GlobalValues.Devices = [];
             byte[] typeValues = [1, 1, 1, 0, 0, 0, 0]; // 类型值
 
             byte[] bufferBytes =
@@ -57,63 +70,91 @@ namespace CotrollerDemo.Models
                          .. GetMacAddress()
             ];
 
-            Task.Run(async () =>
+            Task.Run(() =>
             {
-                int sendResult = await UdpServer.SendAsync(bufferBytes, bufferBytes.Length,
-                    new IPEndPoint(IPAddress.Parse("255.255.255.255"), 9090));
-
-                if (sendResult > 0)
+                try
                 {
-                    var result = UdpServer.Receive(ref _receivePoint);
-
-                    if (result.Length > 0)
-                    {
-                        Application.Current.Dispatcher.Invoke(() =>
-                        {
-                            ProcessData(result);
-                        });
-                    }
+                    TrySendAndReceive(bufferBytes, new IPEndPoint(IPAddress.Parse("255.255.255.255"), 9090));
+                }
+                catch (Exception ex)
+                {
+                    MessageBox.Show($"UDP监听出错: {ex.Message}");
                 }
             });
         }
+        
+        /// <summary>
+        /// 尝试发送并接收数据，支持重试
+        /// </summary>
+        private bool TrySendAndReceive(byte[] bufferBytes, IPEndPoint endpoint, int maxRetries = 1)
+        {
+            bool success = false;
+            int retryCount = 0;
+            
+            while (!success && retryCount <= maxRetries)
+            {
+                if (retryCount > 0)
+                {
+                    // 如果是重试，添加延迟
+                    Thread.Sleep(RetryDelayMs);
+                }
+                
+                // 使用锁确保同一时间只有一个线程访问UdpServer
+                lock (_udpLock)
+                {
+                    int sendResult = UdpServer.Send(bufferBytes, bufferBytes.Length, endpoint);
 
-        //public void ReceiveData()
-        //{
-        //    try
-        //    {
-        //        Task.Run(async () =>
-        //        {
-        //            while (true)
-        //            {
-        //                var result = UdpServer.Receive(ref _receivePoint);
-
-        //                if (result.Length > 0)
-        //                {
-        //                    Application.Current.Dispatcher.Invoke(() =>
-        //                    {
-        //                        ProcessData(result);
-        //                    });
-        //                }
-        //                await Task.Delay(10);
-        //            }
-        //        });
-        //    }
-        //    catch (Exception e)
-        //    {
-        //        MessageBox.Show(e.ToString());
-        //    }
-        //}
-
-        //private byte[] temporaryArray = new byte[8];
+                    if (sendResult > 0)
+                    {
+                        try
+                        {
+                            // 设置接收超时
+                            var receiveTask = Task.Run(() => UdpServer.Receive(ref _receivePoint));
+                            if (receiveTask.Wait(ReceiveTimeoutMs))
+                            {
+                                var result = receiveTask.Result;
+                                if (result is { Length: > 0 })
+                                {
+                                    Application.Current.Dispatcher.Invoke(() =>
+                                    {
+                                        ProcessData(result);
+                                    });
+                                    success = true;
+                                }
+                            }
+                            else
+                            {
+                                UdpServer?.Close();
+                                UdpServer?.Dispose();
+                                UdpServer = new UdpClient(8080);
+                                TrySendAndReceive(bufferBytes, endpoint);
+                                retryCount++;
+                            }
+                        }
+                        catch (SocketException ex)
+                        {
+                            // 记录错误但继续重试
+                            Debug.WriteLine($"接收数据时出错(重试 {retryCount}/{maxRetries}): {ex.Message}");
+                        }
+                    }
+                }
+                
+            }
+            
+            // 仅在所有重试都失败时显示错误
+            if (!success && maxRetries > 0)
+            {
+                Application.Current.Dispatcher.Invoke(() =>
+                {
+                    MessageBox.Show($"在 {maxRetries+1} 次尝试后仍无法完成操作，请检查设备连接");
+                });
+            }
+            
+            return success;
+        }
 
         public void ProcessData(byte[] data)
         {
-            //Array.Copy(data, temporaryArray, 8);
-
-            //string[] hexArray = [.. temporaryArray.Select(b => b.ToString("X2"))];
-
-            //ReceiveValue.SequenceEqual(hexArray) &&
-
             if (data.Length > 29)
             {
                 // 获取接收到的IP
@@ -162,38 +203,53 @@ namespace CotrollerDemo.Models
         /// <param name="isConnect">是否连接</param>
         public void IsConnectDevice(IPAddress ip, bool isConnect)
         {
-            byte[] typeValues; // 类型值
-
-            if (isConnect)
+            Task.Run(() =>
             {
-                typeValues = [1, 1, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0];
-            }
-            else
-            {
-                typeValues = [1, 1, 3, 0, 0, 0, 0];
-            }
-
-            byte[] bufferBytes =
-            [
-              .. HexValue,
-              .. BitConverter.GetBytes(Version),
-              .. typeValues,
-              .. BitConverter.GetBytes(PackLength),
-              .. ServerIp.GetAddressBytes(),
-              .. GetMacAddress()
-            ];
-
-            int sendResult = UdpServer.Send(bufferBytes, bufferBytes.Length, new IPEndPoint(ip, 9090));
-
-            if (sendResult > 0)
-            {
-                var result = UdpServer.Receive(ref _receivePoint);
-
-                if (result.Length > 0)
+                try
                 {
-                    ProcessData(result);
+                    byte[] typeValues; // 类型值
+
+                    if (isConnect)
+                    {
+                        typeValues = [1, 1, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+                    }
+                    else
+                    {
+                        typeValues = [1, 1, 3, 0, 0, 0, 0];
+                    }
+
+                    byte[] bufferBytes =
+                    [
+                      .. HexValue,
+                      .. BitConverter.GetBytes(Version),
+                      .. typeValues,
+                      .. BitConverter.GetBytes(PackLength),
+                      .. ServerIp.GetAddressBytes(),
+                      .. GetMacAddress()
+                    ];
+
+                    // 尝试发送并接收，支持自动重试
+                    // 连接时使用最大重试次数，断开时只尝试一次
+                    int retries = isConnect ? MaxRetryCount : 1;
+                    bool success = TrySendAndReceive(bufferBytes, new IPEndPoint(ip, 9090), retries);
+                    
+                    // 如果是连接操作且之前的重试都失败，显示连接状态
+                    if (isConnect && !success)
+                    {
+                        Application.Current.Dispatcher.Invoke(() =>
+                        {
+                            MessageBox.Show($"设备连接失败，请检查网络和设备状态", "连接失败", MessageBoxButton.OK, MessageBoxImage.Warning);
+                        });
+                    }
                 }
-            }
+                catch (Exception ex)
+                {
+                    Application.Current.Dispatcher.Invoke(() =>
+                    {
+                        MessageBox.Show($"设备连接操作出错: {ex.Message}");
+                    });
+                }
+            });
         }
 
         /// <summary>
@@ -224,7 +280,10 @@ namespace CotrollerDemo.Models
         {
             try
             {
-                UdpServer?.Close();
+                lock (_udpLock)
+                {
+                    UdpServer?.Close();
+                }
             }
             catch (Exception ex)
             {
