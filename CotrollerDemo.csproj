@@ -1,17 +1,14 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
-    <TargetFramework>net8.0-windows7.0</TargetFramework>
+    <TargetFramework>net6.0-windows7.0</TargetFramework>
     <UseWPF>true</UseWPF>
     <LangVersion>12</LangVersion>
   </PropertyGroup>
   <ItemGroup>
-    <None Remove="ViewModels\ControllerViewModel.cs~RF6eb0d67.TMP" />
-  </ItemGroup>
-  <ItemGroup>
-    <PackageReference Include="devexpress.wpf.docking" Version="24.2.5" />
-    <PackageReference Include="devexpress.wpf.grid.core" Version="24.2.5" />
-    <PackageReference Include="devexpress.wpf.layoutcontrol" Version="24.2.5" />
+    <PackageReference Include="devexpress.wpf.docking" Version="23.1.5" />
+    <PackageReference Include="devexpress.wpf.grid.core" Version="23.1.5" />
+    <PackageReference Include="devexpress.wpf.layoutcontrol" Version="23.1.5" />
     <PackageReference Include="Prism.DryIoc" Version="9.0.537" />
   </ItemGroup>
   <ItemGroup>

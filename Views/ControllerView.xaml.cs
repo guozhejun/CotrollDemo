@@ -24,10 +24,10 @@ namespace CotrollerDemo.Views
     /// <summary>
     /// ControllerView.xaml 的交互逻辑
     /// </summary>
-    public partial class ControllerView
+    public partial class ControllerView : UserControl
     {
         // 使用类级别的字段跟踪拖拽状态，避免重复触发
-        private bool _isDragging;
+        private bool _isDragging = false;
 
         private readonly List<string> _titleList = [];
 
@@ -78,7 +78,7 @@ namespace CotrollerDemo.Views
             }
         }
 
-        private void OnDragRecordOver(object sender, DragRecordOverEventArgs e)
+        void OnDragRecordOver(object sender, DragRecordOverEventArgs e)
         {
             if (e.IsFromOutside)
                 e.Effects = DragDropEffects.Copy;
@@ -94,10 +94,7 @@ namespace CotrollerDemo.Views
         {
             try
             {
-                // 如果已经在拖拽中，直接返回
-                // 检查鼠标左键是否按下
-                // 检查发送者是否为ListBoxEdit
-                // 检查是否有选中的项目
+                // 如果已经在拖拽中，直接返回 检查鼠标左键是否按下 检查发送者是否为ListBoxEdit 检查是否有选中的项目
                 if (
                     _isDragging
                     || e.LeftButton != MouseButtonState.Pressed
@@ -117,6 +114,9 @@ namespace CotrollerDemo.Views
 
                 _controller = controller;
 
+                // 清空标题列表，避免重复添加
+                _titleList.Clear();
+
                 // 如果图表尚未初始化或没有图表，则返回
                 if (
                     _controller.Charts == null
@@ -125,36 +125,56 @@ namespace CotrollerDemo.Views
                 )
                     return;
 
-                // 异步获取已有曲线标题，避免阻塞UI
-                Task.Run(() =>
+                // 获取当前图表中所有曲线的标题
+                foreach (
+                    var title in _controller
+                        .Charts[0]
+                        .ViewXY.SampleDataSeries.Select(series =>
+                            series.Title.Text.Split([':'], 2)[0]
+                        )
+                )
                 {
-                    // 清空标题列表，避免重复添加
-                    _titleList.Clear();
+                    _titleList.Add(title);
+                }
 
-                    // 回到UI线程处理拖放操作
-                    Application.Current.Dispatcher.InvokeAsync(() =>
-                    {
-                        // 设置拖拽状态
-                        _isDragging = true;
+                // 检查当前选中的文件是否已经存在于图表中
+                string fileTitle = fileName.Split('.')[0];
+                if (_titleList.Contains(fileTitle))
+                {
+                    // 如果文件已经存在，显示提示并返回
+                    DXMessageBox.Show(
+                        $"文件 {fileName} 已经添加到图表中，不能重复添加。",
+                        "提示",
+                        MessageBoxButton.OK,
+                        MessageBoxImage.Information
+                    );
+                    return;
+                }
 
-                        try
+                // 设置拖拽状态
+                _isDragging = true;
+
+                try
+                {
+                    Dispatcher.Invoke(
+                        new Action(() =>
                         {
                             // 创建拖拽数据
                             DataObject data = new();
                             data.SetData(DataFormats.Text, fileName);
                             DragDrop.DoDragDrop(listBoxEdit, data, DragDropEffects.Link);
-                        }
-                        catch (Exception ex)
-                        {
-                            Debug.WriteLine($"拖拽操作出错: {ex.Message}");
-                        }
-                        finally
-                        {
-                            // 无论成功与否，都重置拖拽状态
-                            _isDragging = false;
-                        }
-                    }, DispatcherPriority.Background);
-                });
+                        })
+                    );
+                }
+                catch (Exception ex)
+                {
+                    Debug.WriteLine($"拖拽操作出错: {ex.Message}");
+                }
+                finally
+                {
+                    // 无论成功与否，都重置拖拽状态
+                    _isDragging = false;
+                }
             }
             catch (Exception ex)
             {
@@ -180,7 +200,7 @@ namespace CotrollerDemo.Views
                     if (string.IsNullOrEmpty(path))
                         return;
 
-                    string filePath = Path.Combine(_controller.FolderPath, path);
+                    string filePath = Path.Combine("D:\\Datas", path);
 
                     if (File.Exists(filePath))
                     {
@@ -275,7 +295,7 @@ namespace CotrollerDemo.Views
                             Margin = new Thickness(5),
                             HorizontalAlignment = HorizontalAlignment.Left,
                         };
-                        selectAllButton.Click += (_, _) =>
+                        selectAllButton.Click += (s, args) =>
                         {
                             foreach (var cb in checkBoxes)
                                 cb.IsChecked = true;
@@ -288,7 +308,7 @@ namespace CotrollerDemo.Views
                             Margin = new Thickness(5),
                             HorizontalAlignment = HorizontalAlignment.Left,
                         };
-                        deselectAllButton.Click += (_, _) =>
+                        deselectAllButton.Click += (s, args) =>
                         {
                             foreach (var cb in checkBoxes)
                                 cb.IsChecked = false;
@@ -321,7 +341,7 @@ namespace CotrollerDemo.Views
                                 {
                                     // 从复选框内容中提取通道名称
                                     string channelName = channelData.Keys.ElementAt(i);
-                                    selectedChannels.Add(Path.GetFileName(filePath).Split('.', count: 2)[0] + "_" + channelName);
+                                    selectedChannels.Add(channelName);
                                 }
                             }
 
@@ -360,7 +380,7 @@ namespace CotrollerDemo.Views
                                     existingSeries.Dispose();
                                 }
 
-                                var yData = channelData[channel.Split('_', 2)[1]].ToArray();
+                                var yData = channelData[channel].ToArray();
 
                                 // 创建新曲线
                                 SampleDataSeries series = new(
@@ -371,7 +391,7 @@ namespace CotrollerDemo.Views
                                 {
                                     Title = new Arction.Wpf.Charting.Titles.SeriesTitle()
                                     {
-                                        Text = channel,
+                                        Text = Path.GetFileName(filePath) + channel,
                                     },
                                     LineStyle =
                                     {
@@ -442,9 +462,7 @@ namespace CotrollerDemo.Views
         private void TextEdit_EditValueChanged(object sender, EditValueChangedEventArgs e)
         {
             var textEdit = sender as TextEdit;
-            var list = _tempFiles.Where(file =>
-                textEdit != null && file.Contains(textEdit.EditText)
-            );
+            var list = _tempFiles.Where(file => file.Contains(textEdit.EditText));
 
             _controller.FileNames = [];
             list.ForEach(file =>

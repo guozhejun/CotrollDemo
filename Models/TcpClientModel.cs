@@ -136,6 +136,7 @@ namespace CotrollerDemo.Models
                                             // 发送数据到通道
                                             ChannelWriter.WriteAsync(receiveData).ConfigureAwait(false).GetAwaiter()
                                                .GetResult();
+
                                         }
                                     }
                                 }

@@ -1,10 +1,8 @@
 ﻿using System;
-using System.Diagnostics;
 using System.Linq;
 using System.Net;
 using System.Net.NetworkInformation;
 using System.Net.Sockets;
-using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
 
@@ -47,9 +45,9 @@ namespace CotrollerDemo.Models
         public UdpClientModel()
         {
             ServerIp = GlobalValues.GetIpAdders();
-            const int serverPort = 8080;
-            UdpServer = new UdpClient(serverPort);
-            //UdpServer.Client.ReceiveTimeout = ReceiveTimeoutMs; // 设置接收超时
+            int serverPort = 8080;
+            UdpServer = new(serverPort);
+            //ReceiveData();
         }
 
         /// <summary>
@@ -58,6 +56,7 @@ namespace CotrollerDemo.Models
         /// <returns></returns>
         public void StartUdpListen()
         {
+            //GlobalValues.Devices = [];
             byte[] typeValues = [1, 1, 1, 0, 0, 0, 0]; // 类型值
 
             byte[] bufferBytes =
@@ -70,7 +69,7 @@ namespace CotrollerDemo.Models
                          .. GetMacAddress()
             ];
 
-            Task.Run(() =>
+            Task.Run(async () =>
             {
                 try
                 {
@@ -102,7 +101,7 @@ namespace CotrollerDemo.Models
                 // 使用锁确保同一时间只有一个线程访问UdpServer
                 lock (_udpLock)
                 {
-                    int sendResult = UdpServer.Send(bufferBytes, bufferBytes.Length, endpoint);
+                    var result = UdpServer.Receive(ref _receivePoint);
 
                     if (sendResult > 0)
                     {
@@ -155,6 +154,12 @@ namespace CotrollerDemo.Models
 
         public void ProcessData(byte[] data)
         {
+            //Array.Copy(data, temporaryArray, 8);
+
+            //string[] hexArray = [.. temporaryArray.Select(b => b.ToString("X2"))];
+
+            //ReceiveValue.SequenceEqual(hexArray) &&
+
             if (data.Length > 29)
             {
                 // 获取接收到的IP
@@ -203,30 +208,26 @@ namespace CotrollerDemo.Models
         /// <param name="isConnect">是否连接</param>
         public void IsConnectDevice(IPAddress ip, bool isConnect)
         {
-            Task.Run(() =>
+            byte[] typeValues; // 类型值
+
+            if (isConnect)
             {
-                try
-                {
-                    byte[] typeValues; // 类型值
+                typeValues = [1, 1, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+            }
+            else
+            {
+                typeValues = [1, 1, 3, 0, 0, 0, 0];
+            }
 
-                    if (isConnect)
-                    {
-                        typeValues = [1, 1, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0];
-                    }
-                    else
-                    {
-                        typeValues = [1, 1, 3, 0, 0, 0, 0];
-                    }
-
-                    byte[] bufferBytes =
-                    [
-                      .. HexValue,
-                      .. BitConverter.GetBytes(Version),
-                      .. typeValues,
-                      .. BitConverter.GetBytes(PackLength),
-                      .. ServerIp.GetAddressBytes(),
-                      .. GetMacAddress()
-                    ];
+            byte[] bufferBytes =
+            [
+              .. HexValue,
+              .. BitConverter.GetBytes(Version),
+              .. typeValues,
+              .. BitConverter.GetBytes(PackLength),
+              .. ServerIp.GetAddressBytes(),
+              .. GetMacAddress()
+            ];
 
                     // 尝试发送并接收，支持自动重试
                     // 连接时使用最大重试次数，断开时只尝试一次
@@ -242,14 +243,7 @@ namespace CotrollerDemo.Models
                         });
                     }
                 }
-                catch (Exception ex)
-                {
-                    Application.Current.Dispatcher.Invoke(() =>
-                    {
-                        MessageBox.Show($"设备连接操作出错: {ex.Message}");
-                    });
-                }
-            });
+            }
         }
 
         /// <summary>

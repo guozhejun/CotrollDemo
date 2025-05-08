@@ -36,6 +36,7 @@
             Orientation="Vertical">
             <dxlc:LayoutItem>
                 <StackPanel Margin="5" Orientation="Horizontal">
+
                     <TextBlock
                         Name="Name"
                         VerticalAlignment="Center"
@@ -68,7 +69,7 @@
                         Height="30"
                         Margin="5,0"
                         Command="{Binding OpenFolderCommand}"
-                        Content="选择文件夹"
+                        Content="打开文件夹"
                         IsEnabled="{Binding IsDrop}" />
                 </dxlc:LayoutItem>
                 <dxlc:LayoutItem>
@@ -162,7 +163,7 @@
                         AllowDrop="True"
                         LogicalTreeStructure="Optimized"
                         ShowContentWhenDragging="False">
-                        <dxdo:LayoutGroup x:Name="ChartDockGroup" TabContentCacheMode="CacheTabsOnSelecting">
+                        <dxdo:LayoutGroup x:Name="ChartDockGroup">
                             <dxdo:LayoutPanel x:Name="ChartLayPanel" Drop="ChartLayPanel_Drop">
                                 <Canvas x:Name="CanvasBase" SizeChanged="CanvasBase_SizeChanged">
                                     <dxmvvm:Interaction.Triggers>
