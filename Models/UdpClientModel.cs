@@ -34,10 +34,10 @@ namespace CotrollerDemo.Models
 
         // 添加接收超时设置
         private const int ReceiveTimeoutMs = 3000; // 3秒接收超时
-        
+
         // 添加最大重试次数
         private const int MaxRetryCount = 3; // 最大重试次数
-        
+
         // 添加重试间隔
         private const int RetryDelayMs = 1000; // 重试间隔时间(毫秒)
 
@@ -82,7 +82,7 @@ namespace CotrollerDemo.Models
                 }
             });
         }
-        
+
         /// <summary>
         /// 尝试发送并接收数据，支持重试
         /// </summary>
@@ -90,7 +90,7 @@ namespace CotrollerDemo.Models
         {
             bool success = false;
             int retryCount = 0;
-            
+
             while (!success && retryCount <= maxRetries)
             {
                 if (retryCount > 0)
@@ -98,7 +98,7 @@ namespace CotrollerDemo.Models
                     // 如果是重试，添加延迟
                     Thread.Sleep(RetryDelayMs);
                 }
-                
+
                 // 使用锁确保同一时间只有一个线程访问UdpServer
                 lock (_udpLock)
                 {
@@ -138,18 +138,18 @@ namespace CotrollerDemo.Models
                         }
                     }
                 }
-                
+
             }
-            
+
             // 仅在所有重试都失败时显示错误
             if (!success && maxRetries > 0)
             {
                 Application.Current.Dispatcher.Invoke(() =>
                 {
-                    MessageBox.Show($"在 {maxRetries+1} 次尝试后仍无法完成操作，请检查设备连接");
+                    MessageBox.Show($"在 {maxRetries + 1} 次尝试后仍无法完成操作，请检查设备连接");
                 });
             }
-            
+
             return success;
         }
 
@@ -232,7 +232,7 @@ namespace CotrollerDemo.Models
                     // 连接时使用最大重试次数，断开时只尝试一次
                     int retries = isConnect ? MaxRetryCount : 1;
                     bool success = TrySendAndReceive(bufferBytes, new IPEndPoint(ip, 9090), retries);
-                    
+
                     // 如果是连接操作且之前的重试都失败，显示连接状态
                     if (isConnect && !success)
                     {
@@ -280,10 +280,7 @@ namespace CotrollerDemo.Models
         {
             try
             {
-                lock (_udpLock)
-                {
-                    UdpServer?.Close();
-                }
+                UdpServer?.Close();
             }
             catch (Exception ex)
             {
